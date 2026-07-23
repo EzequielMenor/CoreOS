@@ -47,3 +47,8 @@ repomix-output.xml
 audit*.md
 scout.md
 *.xml
+
+# Local folders
+docs/
+.vscode/
+CLAUDE.md
