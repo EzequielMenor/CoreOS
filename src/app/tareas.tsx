@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -25,6 +25,7 @@ import { useUiStore } from '@/stores/ui';
 import { ButtonBrand } from '@/components/ButtonBrand';
 import { EmptyState } from '@/components/EmptyState';
 import { EditorialTaskItem } from '@/components/EditorialTaskItem';
+import { SwipeableRow } from '@/components/SwipeableRow';
 
 import type {
   CreateTareaInput,
@@ -84,6 +85,7 @@ export default function TareasScreen() {
   const [formDueDate, setFormDueDate] = useState('');
   const [formPriority, setFormPriority] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const undoRef = useRef<TareaRow | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -139,19 +141,33 @@ export default function TareasScreen() {
     [toggleStatus],
   );
 
-  const handleDelete = useCallback(
-    (id: number) => {
+  const handleSwipeLeft = useCallback(
+    (item: TareaRow) => {
       void haptic.notify.warning();
-      void deleteTarea(id)
+      undoRef.current = item;
+      void deleteTarea(item.id)
         .then(() => {
-          Toast.show({ type: 'info', text1: 'Tarea eliminada' });
+          Toast.show({
+            type: 'info',
+            text1: 'Tarea eliminada',
+            text2: 'Pulsa para deshacer',
+            visibilityTime: 5000,
+            onPress: () => {
+              if (undoRef.current) {
+                const { title, due_date, priority } = undoRef.current;
+                void createTarea({ title, due_date, priority });
+                undoRef.current = null;
+                Toast.hide();
+              }
+            },
+          });
         })
         .catch(() => {
           void haptic.notify.error();
           Toast.show({ type: 'error', text1: 'No se pudo eliminar la tarea' });
         });
     },
-    [deleteTarea],
+    [deleteTarea, createTarea],
   );
 
   const handleSubmit = useCallback(async () => {
@@ -251,7 +267,7 @@ export default function TareasScreen() {
   return (
     <SafeAreaView
       style={[styles.container, { backgroundColor: theme.notes.bg.base }]}
-      edges={['top']}
+      edges={[]}
     >
       <Stack.Screen options={{ title: 'Tareas' }} />
 
@@ -329,7 +345,7 @@ export default function TareasScreen() {
             items={items}
             onToggle={handleToggle}
             onPressRow={handleOpenEdit}
-            onDelete={handleDelete}
+            onDelete={handleSwipeLeft}
             emptyState={emptyState}
           />
         )}
@@ -345,7 +361,7 @@ export default function TareasScreen() {
           styles.fab,
           {
             backgroundColor: theme.notes.accent.primary,
-            bottom: insets.bottom + NoteSpacing.lg,
+            bottom: 172, // ponytail: encima del global FAB de IA
             opacity: pressed ? 0.85 : 1,
           },
         ]}
@@ -530,7 +546,7 @@ interface FlatListTareasProps {
   items: TareaRow[];
   onToggle: (id: number) => void;
   onPressRow: (id: number) => void;
-  onDelete: (id: number) => void;
+  onDelete: (item: TareaRow) => void;
   emptyState: React.ReactElement;
 }
 
@@ -541,41 +557,28 @@ function FlatListTareas({
   onDelete,
   emptyState,
 }: FlatListTareasProps) {
-  const theme = useTheme();
 
   const renderRow = useCallback(
     ({ item }: { item: TareaRow }) => {
       const due = formatDueDate(item.due_date);
       return (
-        <View style={styles.itemWrapper}>
-          <View style={{ flex: 1 }}>
-            <EditorialTaskItem
-              title={item.title}
-              status={item.status}
-              dueDate={due}
-              priority={item.priority}
-              onToggle={() => onToggle(item.id)}
-              onPress={() => onPressRow(item.id)}
-            />
+        <SwipeableRow rightAction={() => onDelete(item)}>
+          <View style={styles.itemWrapper}>
+            <View style={{ flex: 1 }}>
+              <EditorialTaskItem
+                title={item.title}
+                status={item.status}
+                dueDate={due}
+                priority={item.priority}
+                onToggle={() => onToggle(item.id)}
+                onPress={() => onPressRow(item.id)}
+              />
+            </View>
           </View>
-          <Pressable
-            accessibilityLabel="Eliminar tarea"
-            accessibilityRole="button"
-            hitSlop={8}
-            onPress={() => onDelete(item.id)}
-            style={({ pressed }) => [
-              styles.deleteBtn,
-              { opacity: pressed ? 0.5 : 1 },
-            ]}
-          >
-            <Text style={[styles.deleteBtnText, { color: theme.notes.text.muted }]}>
-              ×
-            </Text>
-          </Pressable>
-        </View>
+        </SwipeableRow>
       );
     },
-    [onToggle, onPressRow, onDelete, theme],
+    [onToggle, onPressRow, onDelete],
   );
 
   return (
@@ -712,17 +715,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderRadius: Radii.full,
     elevation: 8,
-    height: 56,
+    height: 48,
     justifyContent: 'center',
     position: 'absolute',
     right: NoteSpacing.lg,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
-    width: 56,
+    width: 48,
   },
   fabPlus: {
-    fontSize: 28,
+    fontSize: 24,
     fontWeight: '300',
     lineHeight: 30,
   },

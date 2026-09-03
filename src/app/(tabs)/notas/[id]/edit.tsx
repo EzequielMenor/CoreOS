@@ -9,7 +9,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
 import { NoteSpacing, Typography } from '@/constants/theme';
 import { getById } from '@/db/queries/notes';
@@ -30,6 +30,7 @@ import { TagPill } from '@/components/TagPill';
 
 export default function NoteEditorScreen() {
   const theme = useTheme();
+  const router = useRouter();
   const params = useLocalSearchParams<{ id: string }>();
   const noteId = Number(params.id);
   const updateNote = useNotesStore((state) => state.updateNote);
@@ -51,6 +52,13 @@ export default function NoteEditorScreen() {
       await createTag(name);
     },
   });
+
+  // ponytail: navegar solo después de que el flush termine. Si handleSavePress
+  // lanza, el await propaga y NO navegamos — el usuario conserva la nota.
+  const handleSaveAndExit = useCallback(async () => {
+    await editor.handleSavePress();
+    router.back();
+  }, [editor, router]);
 
   const pickerAvailable = useMemo(
     () => availableTags.filter((tag) => !editor.tagNames.includes(tag.name)),
@@ -94,7 +102,7 @@ export default function NoteEditorScreen() {
                 accessibilityLabel="Guardar ahora"
                 accessibilityRole="button"
                 hitSlop={8}
-                onPress={editor.handleSavePress}
+                onPress={handleSaveAndExit}
               >
                 <Text
                   style={[styles.saveAction, { color: theme.notes.text.accent }]}

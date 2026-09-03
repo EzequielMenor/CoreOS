@@ -1,12 +1,11 @@
 import { useMemo } from 'react';
-import { Platform, Pressable, SectionList, StyleSheet, Text, View } from 'react-native';
+import { Platform, SectionList, StyleSheet, Text, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
-import Animated, { useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
 
 import { IconSize, NoteSpacing } from '@/constants/theme';
 import type { Note, Sections } from '@/db/queries/notes';
 import { useTheme } from '@/hooks/use-theme';
-import { animations, haptic } from '@/lib/animations';
+import { haptic } from '@/lib/animations';
 import { useNotesStore } from '@/stores/notes';
 
 import { EmptyState } from './EmptyState';
@@ -64,57 +63,49 @@ function PinIcon({ color }: { color: string }) {
   return <Text style={styles.pinFallback}>📌</Text>;
 }
 
-function NoteRow({ note, onPress }: { note: Note; onPress: (id: number) => void }) {
+// ponytail: NoteRow ya no usa <Pressable> ni animación de scale. El tap se
+// delega al SwipeableRow (Gesture.Race(pan, tap)) para que conviva limpio con
+// el pan. Upgrade path: si se quiere feedback de press, envolver el View con
+// un Gesture.Tap().onBegin()/.onFinalize() que actualice un useSharedValue.
+function NoteRow({ note }: { note: Note }) {
   const theme = useTheme();
-  const scale = useSharedValue(1);
-  const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: scale.value }],
-  }));
   const visibleTags = note.tags.slice(0, 3);
   const hiddenTagCount = note.tags.length - visibleTags.length;
 
   return (
-    <Animated.View style={animatedStyle}>
-      <Pressable
-        accessibilityRole="button"
-        onPressIn={() => {
-          scale.set(animations.press.scale.apply(scale));
-        }}
-        onPress={() => {
-          void haptic.tap.light();
-          onPress(note.id);
-        }}
-        style={[
-          styles.row,
-          {
-            backgroundColor: theme.notes.bg.surface,
-            borderBottomColor: theme.notes.border.subtle,
-            borderLeftColor: note.pinned ? theme.notes.accent.primary : 'transparent',
-          },
-        ]}
-      >
-        <View style={styles.titleRow}>
-          {note.pinned ? <PinIcon color={theme.notes.text.accent} /> : null}
-          <Text
-            numberOfLines={1}
-            style={[styles.noteTitle, { color: theme.notes.text.primary }]}
-          >
-            {note.title.trim() || 'Sin título'}
-          </Text>
+    <View
+      accessible
+      accessibilityRole="button"
+      style={[
+        styles.row,
+        {
+          backgroundColor: theme.notes.bg.surface,
+          borderBottomColor: theme.notes.border.subtle,
+          borderLeftColor: note.pinned ? theme.notes.accent.primary : 'transparent',
+        },
+      ]}
+    >
+      <View style={styles.titleRow}>
+        {note.pinned ? <PinIcon color={theme.notes.text.accent} /> : null}
+        <Text
+          numberOfLines={1}
+          style={[styles.noteTitle, { color: theme.notes.text.primary }]}
+        >
+          {note.title.trim() || 'Sin título'}
+        </Text>
+      </View>
+      <View style={styles.metadata}>
+        <View style={styles.tags}>
+          {visibleTags.map((name) => (
+            <TagPill key={name} name={name} variant="display" />
+          ))}
+          {hiddenTagCount > 0 ? <TagPill name={`+${hiddenTagCount}`} variant="display" /> : null}
         </View>
-        <View style={styles.metadata}>
-          <View style={styles.tags}>
-            {visibleTags.map((name) => (
-              <TagPill key={name} name={name} variant="display" />
-            ))}
-            {hiddenTagCount > 0 ? <TagPill name={`+${hiddenTagCount}`} variant="display" /> : null}
-          </View>
-          <Text style={[styles.timestamp, { color: theme.notes.text.muted }]}>
-            {formatRelative(note.created_at)}
-          </Text>
-        </View>
-      </Pressable>
-    </Animated.View>
+        <Text style={[styles.timestamp, { color: theme.notes.text.muted }]}>
+          {formatRelative(note.created_at)}
+        </Text>
+      </View>
+    </View>
   );
 }
 
@@ -173,7 +164,7 @@ export function SectionedNoteList({
       keyboardShouldPersistTaps="handled"
       ListEmptyComponent={
         <EmptyState
-          illustration={searchMode ? 'search' : 'notes'}
+          illustration={searchMode ? 'sf.magnifyingglass' : 'sf.doc.text'}
           title={searchMode ? 'Sin resultados' : 'Sin notas todavía'}
           subtitle={
             searchMode
@@ -190,8 +181,12 @@ export function SectionedNoteList({
         <SwipeableRow
           leftAction={() => handleSwipeRight(item)}
           rightAction={() => handleSwipeLeft(item)}
+          onTap={() => {
+            void haptic.tap.light();
+            onNotePress(item.id);
+          }}
         >
-          <NoteRow note={item} onPress={onNotePress} />
+          <NoteRow note={item} />
         </SwipeableRow>
       )}
       renderSectionHeader={({ section }) =>

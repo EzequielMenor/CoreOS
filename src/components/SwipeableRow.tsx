@@ -4,6 +4,7 @@ import { SymbolView } from 'expo-symbols';
 import {
   Gesture,
   GestureDetector,
+  type ComposedGesture,
   type GestureType,
 } from 'react-native-gesture-handler';
 import Animated, {
@@ -29,6 +30,10 @@ export interface SwipeableRowProps {
   rightHaptic?: () => void;
   threshold?: number;
   simultaneousWithExternalGesture?: ExternalGesture;
+  // ponytail: tap opcional para reemplazar <Pressable> del children. Se
+  // combina con Gesture.Race(pan, tap) — si el pan reclama, el tap queda
+  // cancelado y NO se ejecuta onTap. Sin onTap, comportamiento intacto.
+  onTap?: () => void;
   children: ReactNode;
 }
 
@@ -55,6 +60,7 @@ export function SwipeableRow({
   rightHaptic = haptic.tap.medium,
   threshold = 0.3,
   simultaneousWithExternalGesture,
+  onTap,
   children,
 }: SwipeableRowProps) {
   const theme = useTheme();
@@ -105,8 +111,29 @@ export function SwipeableRow({
       thresholdReached.value = false;
     });
 
+  // ponytail: simultaneousWithExternalGesture se aplica a `pan` antes de la
+  // composición (mismo trato que el original). ComposedGesture no expone
+  // ese método, así que si en el futuro hace falta también en el tap, hay
+  // que aplicarlo a `tap` antes del Race — YAGNI por ahora (el tap es
+  // instantáneo y no choca con scrolls externos típicos).
   if (simultaneousWithExternalGesture) {
     pan = pan.simultaneousWithExternalGesture(simultaneousWithExternalGesture);
+  }
+
+  // ponytail: si se pasa onTap, Race(pan, tap) — el primer gesture en activarse
+  // gana. Como Pan tiene activeOffsetX([-10, 10]) y failOffsetY([-10, 10]),
+  // cualquier movimiento horizontal > 10px cancela el tap automáticamente;
+  // un tap puro (sin desplazamiento) llega a onTap sin que se dispare onEnd
+  // del pan con threshold.
+  let composed: GestureType | ComposedGesture = pan;
+  if (onTap) {
+    const tapHandler = onTap;
+    const tap = Gesture.Tap()
+      .maxDuration(250)
+      .onEnd(() => {
+        scheduleOnRN(tapHandler);
+      });
+    composed = Gesture.Race(pan, tap);
   }
 
   const rowStyle = useAnimatedStyle(() => ({
@@ -143,7 +170,7 @@ export function SwipeableRow({
       >
         {rightReveal ?? <RevealIcon side="delete" color={theme.notes.text.primary} />}
       </Animated.View>
-      <GestureDetector gesture={pan}>
+      <GestureDetector gesture={composed}>
         <Animated.View style={rowStyle}>{children}</Animated.View>
       </GestureDetector>
     </View>

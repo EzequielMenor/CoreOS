@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -9,7 +9,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 
 import { getById } from '@/db/queries/notes';
@@ -51,37 +51,38 @@ export default function NoteDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
 
-  useEffect(() => {
-    let active = true;
-    if (!Number.isFinite(noteId) || noteId <= 0) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setLoading(false);
-      setNotFound(true);
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      if (!Number.isFinite(noteId) || noteId <= 0) {
+        setLoading(false);
+        setNotFound(true);
+        return () => {
+          active = false;
+        };
+      }
+      setLoading(true);
+      setNotFound(false);
+      getById(noteId)
+        .then((fetched) => {
+          if (!active) return;
+          setNote(fetched);
+          setNotFound(fetched == null);
+        })
+        .catch((error: unknown) => {
+          console.error('[NoteDetail] getById failed', error);
+          if (!active) return;
+          setNotFound(true);
+        })
+        .finally(() => {
+          if (!active) return;
+          setLoading(false);
+        });
       return () => {
         active = false;
       };
-    }
-    setLoading(true);
-    setNotFound(false);
-    getById(noteId)
-      .then((fetched) => {
-        if (!active) return;
-        setNote(fetched);
-        setNotFound(fetched == null);
-      })
-      .catch((error: unknown) => {
-        console.error('[NoteDetail] getById failed', error);
-        if (!active) return;
-        setNotFound(true);
-      })
-      .finally(() => {
-        if (!active) return;
-        setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [noteId]);
+    }, [noteId])
+  );
 
   const goToEdit = useCallback(() => {
     if (note == null) return;

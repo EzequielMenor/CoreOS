@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import {
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import Toast from 'react-native-toast-message';
 import { SymbolView } from 'expo-symbols';
@@ -9,6 +16,7 @@ import { IconSize, NoteSpacing, Radii } from '@/constants/theme';
 import type { Note } from '@/db/queries/notes';
 import { useTheme } from '@/hooks/use-theme';
 import { haptic } from '@/lib/animations';
+import { waitForPendingSave } from '@/lib/note-save-gate';
 import { useNotesStore } from '@/stores/notes';
 import { useTagsStore } from '@/stores/tags';
 
@@ -21,7 +29,6 @@ const SEARCH_DEBOUNCE_MS = 300;
 export default function NotesListScreen() {
   const router = useRouter();
   const theme = useTheme();
-  const insets = useSafeAreaInsets();
   const sections = useNotesStore((state) => state.sections);
   const searchResults = useNotesStore((state) => state.searchResults);
   const loading = useNotesStore((state) => state.loading);
@@ -45,7 +52,14 @@ export default function NotesListScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      refreshSections();
+      // ponytail: drena el gate del editor antes de fetchear. Sin esto, una
+      // navegacion rapida back desde el editor provoca que fetchSections lea
+      // la DB antes de que el flushSave termine el INSERT — la lista muestra
+      // la version anterior y el swipe-to-delete queda en estado fantasma.
+      void (async () => {
+        await waitForPendingSave();
+        refreshSections();
+      })();
     }, [refreshSections]),
   );
 
@@ -117,12 +131,44 @@ export default function NotesListScreen() {
     [pinNote],
   );
 
+  const headerRight = useCallback(
+    () => (
+      <Pressable
+        accessibilityLabel="Ajustes"
+        accessibilityRole="button"
+        hitSlop={8}
+        onPress={() => {
+          void haptic.tap.light();
+          router.push('/ajustes');
+        }}
+        style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+      >
+        {Platform.OS === 'ios' ? (
+          <SymbolView
+            name="gearshape"
+            size={IconSize.md}
+            tintColor={theme.notes.text.primary}
+          />
+        ) : (
+          <Text style={{ color: theme.notes.text.primary, fontSize: 16 }}>⚙️</Text>
+        )}
+      </Pressable>
+    ),
+    [router, theme],
+  );
+
   return (
     <SafeAreaView
       style={[styles.container, { backgroundColor: theme.notes.bg.base }]}
-      edges={['top']}
+      edges={['bottom']}
     >
-      <Stack.Screen options={{ title: 'Notas', headerShown: false }} />
+      <Stack.Screen
+        options={{
+          title: 'Notas',
+          headerRight,
+          headerTitleAlign: 'center',
+        }}
+      />
       <View style={[styles.searchWrap, { paddingTop: NoteSpacing.sm }]}>
         <SearchBar
           onChangeText={setQuery}
@@ -145,7 +191,6 @@ export default function NotesListScreen() {
             selected={selectedTagIds.length === 0}
             onPress={() => {
               if (selectedTagIds.length === 0) return;
-              // Limpia todos los tags seleccionados toggleando cada uno.
               void Promise.all(
                 selectedTagIds.map((tagId) =>
                   useNotesStore.getState().toggleTagFilter(tagId),
@@ -180,7 +225,7 @@ export default function NotesListScreen() {
         />
       </View>
 
-      {/* FAB — mismo patrón que gastos/tareas/hub (audit-ui-scout #5) */}
+      {/* FAB — mismo patron que gastos/tareas/hub (audit-ui-scout #5) */}
       <Pressable
         accessibilityLabel="Crear nota"
         accessibilityRole="button"
@@ -193,7 +238,7 @@ export default function NotesListScreen() {
           styles.fab,
           {
             backgroundColor: theme.notes.accent.primary,
-            bottom: insets.bottom + NoteSpacing.lg,
+            bottom: NoteSpacing.xl,
             opacity: pressed ? 0.85 : 1,
           },
         ]}
@@ -239,17 +284,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderRadius: Radii.full,
     elevation: 8,
-    height: 56,
+    height: 48,
     justifyContent: 'center',
     position: 'absolute',
     right: NoteSpacing.lg,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
-    width: 56,
+    width: 48,
   },
   fabPlus: {
-    fontSize: 28,
+    fontSize: 24,
     fontWeight: '300',
     lineHeight: 30,
   },

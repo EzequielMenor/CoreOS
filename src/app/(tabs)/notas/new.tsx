@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -9,7 +9,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 
 import { NoteSpacing, Typography } from '@/constants/theme';
 import type { CreateNoteInput, UpdateNoteInput } from '@/db/queries/notes';
@@ -29,6 +29,7 @@ import { TagPill } from '@/components/TagPill';
 
 export default function NewNoteScreen() {
   const theme = useTheme();
+  const router = useRouter();
   const createNote = useNotesStore((state) => state.createNote);
   const updateNote = useNotesStore((state) => state.updateNote);
   const createTag = useTagsStore((state) => state.createTag);
@@ -41,6 +42,13 @@ export default function NewNoteScreen() {
       await createTag(name);
     },
   });
+
+  // ponytail: navegar solo después de que el flush termine. Si handleSavePress
+  // lanza, el await propaga y NO navegamos — el usuario conserva la nota.
+  const handleSaveAndExit = useCallback(async () => {
+    await editor.handleSavePress();
+    router.back();
+  }, [editor, router]);
 
   const pickerAvailable = useMemo(
     () => availableTags.filter((tag) => !editor.tagNames.includes(tag.name)),
@@ -68,7 +76,7 @@ export default function NewNoteScreen() {
                   accessibilityLabel="Guardar ahora"
                   accessibilityRole="button"
                   hitSlop={8}
-                  onPress={editor.handleSavePress}
+                  onPress={handleSaveAndExit}
                 >
                   <Text
                     style={[styles.saveAction, { color: theme.notes.text.accent }]}

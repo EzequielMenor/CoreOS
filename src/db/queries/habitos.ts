@@ -20,6 +20,18 @@ export async function getHabitos(): Promise<HabitosRow[]> {
   );
 }
 
+export async function createHabit(habitName: string, status: 'done' | 'missed' = 'done'): Promise<void> {
+  const db = await getDb();
+  const date = new Date().toISOString().split('T')[0];
+  await db.runAsync(
+    'INSERT INTO habitos_log (habit_name, status, date, created_at) VALUES (?, ?, ?, ?)',
+    habitName,
+    status,
+    date,
+    Date.now(),
+  );
+}
+
 export async function toggleHabitLog(
   habitName: string,
   date: string,
