@@ -63,37 +63,14 @@ function currentMonth(): { year: number; month: number } {
   return { year: d.getFullYear(), month: d.getMonth() };
 }
 
-// ── Mock mode para preview visual ──────────────────────────────────────────
-// ponytail: borrar este bloque cuando haya datos reales suficientes.
-const MOCK_MODE = false;
-const mockNow = Date.now();
-const MOCK_DAY = 86_400_000;
-const MOCK_GASTOS: GastoRow[] = [
-  { id: 1, amount: 47.30, description: 'Supermercado Mercadona', category: 'alimentación', date: '2026-07-22', created_at: mockNow },
-  { id: 2, amount: 12.50, description: 'Café + tostada Starbucks', category: 'restaurantes', date: '2026-07-22', created_at: mockNow },
-  { id: 3, amount: 89.99, description: 'Suscripción anual Figma', category: 'software', date: '2026-07-21', created_at: mockNow - MOCK_DAY },
-  { id: 4, amount: 35.00, description: 'Gasolina', category: 'transporte', date: '2026-07-20', created_at: mockNow - MOCK_DAY * 2 },
-  { id: 5, amount: 15.90, description: 'Libro "Domain-Driven Design"', category: 'formación', date: '2026-07-19', created_at: mockNow - MOCK_DAY * 3 },
-  { id: 6, amount: 9.99, description: 'Netflix mensual', category: 'ocio', date: '2026-07-18', created_at: mockNow - MOCK_DAY * 4 },
-  { id: 7, amount: 62.00, description: 'Cena con amigos', category: 'restaurantes', date: '2026-07-17', created_at: mockNow - MOCK_DAY * 5 },
-  { id: 8, amount: 24.50, description: 'Farmacia', category: 'salud', date: '2026-07-16', created_at: mockNow - MOCK_DAY * 6 },
-  { id: 9, amount: 29.90, description: 'Camiseta Uniqlo', category: 'ropa', date: '2026-07-15', created_at: mockNow - MOCK_DAY * 7 },
-  { id: 10, amount: 15.72, description: 'Panadería artesana', category: 'alimentación', date: '2026-07-14', created_at: mockNow - MOCK_DAY * 8 },
-];
-const MOCK_MONTH_TOTAL: MonthTotal = { year: 2026, month: 6, total: 342.80, count: 10 };
-
 export const useGastosStore = create<GastosState>()((set, get) => ({
-  items: MOCK_MODE ? MOCK_GASTOS : [],
-  monthTotal: MOCK_MODE ? MOCK_MONTH_TOTAL : null,
+  items: [],
+  monthTotal: null,
   selectedMonth: currentMonth(),
   loading: false,
   error: null,
 
   fetchItems: async () => {
-    if (MOCK_MODE) {
-      set({ items: MOCK_GASTOS, monthTotal: MOCK_MONTH_TOTAL, loading: false });
-      return;
-    }
     set({ loading: true, error: null });
     try {
       const { year, month } = get().selectedMonth;

@@ -1,10 +1,9 @@
 import { getDb } from '../index';
 import { setTagsForNote } from './tags';
 
-// ponytail: timestamps en segundos (unixepoch()) para alinear con la query
-// de getSections (usa strftime('%s','now',...)). Las notas legacy insertadas
-// desde dispatchRoutedResult están en ms — desajuste conocido que se
-// resolverá en una limpieza posterior; este repo solo escribe en segundos.
+// Timestamps en segundos (unixepoch()) para alinear con la query de
+// getSections (usa strftime('%s','now',...)). La migración v3 normalizó las
+// filas legacy del dispatcher (ms → s); el dispatcher V1 ya escribe segundos.
 
 export type NoteStatus = 'inbox' | 'active' | 'archived';
 
@@ -140,7 +139,6 @@ export async function getSections(
     FROM notes n, now_d
     WHERE n.deleted_at IS NULL AND n.pinned = 0
       AND n.created_at >= (SELECT v FROM now_d)
-      AND n.created_at <  (SELECT v FROM yesterday)
       AND (? IS NULL OR n.id IN (SELECT note_id FROM filter_clause))
     UNION ALL
     SELECT 'YESTERDAY', n.id, n.title, n.body_md, n.status,
@@ -193,7 +191,11 @@ export async function getSections(
   return sectionBucket(rows);
 }
 
-interface NoteRowWithTags extends NoteLikeRow {}
+type NoteRowWithTags = NoteLikeRow;
+
+interface NoteRowWithScore extends NoteLikeRow {
+  bm25_raw: number;
+}
 
 export async function getById(id: number): Promise<Note | null> {
   const db = await getDb();
@@ -214,17 +216,21 @@ export async function getById(id: number): Promise<Note | null> {
   return note ?? null;
 }
 
-export async function searchNotes(query: string): Promise<Note[]> {
+// V1: búsqueda FTS5 pura (bm25). Sin capa semántica/embeddings.
+export async function searchNotesWithScore(
+  query: string,
+  signal?: AbortSignal,
+): Promise<{ note: Note; bm25: number }[]> {
   const trimmed = query.trim();
   if (!trimmed) return [];
-  // ponytail: wrap en comillas dobles = phrase-search FTS5, sin booleanos.
-  // Los caracteres " internos se duplican. Usuario pierde AND/OR/wildcards
-  // a cambio de no recibir syntax errors con caracteres raros.
+  if (signal?.aborted) return [];
+  // ponytail: quoted FTS5 phrase search avoids syntax errors from user input.
   const ftsQuery = `"${trimmed.replace(/"/g, '""')}"`;
   const db = await getDb();
-  const rows = await db.getAllAsync<NoteRowWithTags>(
+  const rows = await db.getAllAsync<NoteRowWithScore>(
     `SELECT n.id, n.title, n.body_md, n.status, n.pinned, n.parent_id,
             n.created_at, n.updated_at, n.deleted_at,
+            bm25(notes_fts) AS bm25_raw,
             (
               SELECT GROUP_CONCAT(t.name, ' ')
               FROM note_tags nt JOIN tags t ON t.id = nt.tag_id
@@ -234,10 +240,14 @@ export async function searchNotes(query: string): Promise<Note[]> {
      JOIN notes n ON n.id = fts.rowid
      WHERE notes_fts MATCH ?
        AND n.deleted_at IS NULL
-     ORDER BY bm25(notes_fts)`,
+     ORDER BY bm25_raw ASC`,
     ftsQuery,
   );
-  return attachTags(rows);
+  // ponytail: FTS5 bm25 stays ASC because lower (more negative) means more relevant.
+  return attachTags(rows).map((note, index) => ({
+    note,
+    bm25: rows[index].bm25_raw,
+  }));
 }
 
 export async function createNote(input: CreateNoteInput): Promise<number> {

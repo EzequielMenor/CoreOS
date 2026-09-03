@@ -101,3 +101,19 @@ export async function countPendingTareas(): Promise<number> {
   );
   return row?.cnt ?? 0;
 }
+
+// V1 "Hoy": pending con fecha <= hoy (vencidas incluidas). Las tareas sin
+// fecha y las futuras NO aparecen aquí (viven en la ruta secundaria /tareas).
+// Orden: vencidas primero, luego prioridad (alta > media > baja), luego fecha.
+export async function getTareasHoy(hoyISO: string): Promise<TareaRow[]> {
+  const db = await getDb();
+  return db.getAllAsync<TareaRow>(
+    `SELECT * FROM tareas
+     WHERE status = 'pending' AND due_date IS NOT NULL AND due_date <= ?
+     ORDER BY (due_date < ?) DESC,
+       CASE priority WHEN 'alta' THEN 0 WHEN 'media' THEN 1 WHEN 'baja' THEN 2 ELSE 3 END,
+       due_date ASC`,
+    hoyISO,
+    hoyISO,
+  );
+}

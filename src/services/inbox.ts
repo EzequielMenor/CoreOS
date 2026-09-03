@@ -25,7 +25,7 @@ export type BatchResult = {
   processed: number;
   failed: number;
   skipped: number;
-  errors: Array<{ inboxId: number; error: string }>;
+  errors: { inboxId: number; error: string }[];
 };
 
 // ponytail: helper local de soporte — coercea a string y trunca con …
@@ -56,8 +56,9 @@ export async function processInboxItem(id: number): Promise<ProcessResult> {
 
   // 2. leer item por id (SELECT inline — D3)
   const item = await db.getFirstAsync<InboxRow>('SELECT * FROM inbox WHERE id=?', id);
-  if (!item) return { skipped: true, reason: 'not_found' };
-  if (item.status !== 'pending') return { skipped: true, reason: 'not_pending' };
+  if (!item || item.status !== 'pending') {
+    return { skipped: true, reason: !item ? 'not_found' : 'not_pending' };
+  }
 
   // 3. LLM (D6: try/catch separado para distinguir fallo LLM de fallo dispatch)
   let routed: Awaited<ReturnType<typeof processInboxText>>;
@@ -83,8 +84,10 @@ export async function processInboxItem(id: number): Promise<ProcessResult> {
       // I1: dispatchRoutedResult debe usar solo runAsync/getFirstAsync directos,
       // nunca withTransactionAsync. Como getDb() retorna singleton, las queries
       // internas de dispatchRoutedResult corren en la misma conexión → misma tx.
-      await dispatchRoutedResult(routed.type, routed.content as Record<string, unknown>);
+      // V1: raw_text viaja como argumento; para 'nota' es el cuerpo íntegro.
+      await dispatchRoutedResult(routed.type, routed.content as Record<string, unknown>, item.raw_text);
     });
+
     return { skipped: false, routeType: routed.type, inboxId: id };
   } catch (err) {
     const msg = toErrorMessage(err);
@@ -119,13 +122,11 @@ export async function processPendingInbox(): Promise<BatchResult> {
 
     const result: BatchResult = { processed: 0, failed: 0, skipped: 0, errors: [] };
 
-    if (items.length === 0) {
-      console.info('[inbox] batch done, processed=0 failed=0 skipped=0');
-      return result;
-    }
+    if (items.length === 0) return result;
 
     console.info(`[inbox] batch start, ${items.length} items pending`);
 
+    // I3: secuencial, nunca Promise.all.
     for (const item of items) {
       const r = await processInboxItem(item.id);
       if (r.skipped) {

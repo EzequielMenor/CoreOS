@@ -10,7 +10,6 @@ interface TagsState {
 
   fetchTags: () => Promise<void>;
   createTag: (name: string) => Promise<void>;
-  deleteTag: (id: number) => Promise<void>;
 }
 
 function setError(error: string | null): { error: string | null } {
@@ -41,17 +40,6 @@ export const useTagsStore = create<TagsState>()((set) => ({
       await tagsRepo.createTag(name);
     } catch (e) {
       set(setError(e instanceof Error ? e.message : 'createTag failed'));
-      throw e;
-    }
-    await useTagsStore.getState().fetchTags();
-    await useNotesStore.getState().fetchSections();
-  },
-
-  deleteTag: async (id) => {
-    try {
-      await tagsRepo.deleteTag(id);
-    } catch (e) {
-      set(setError(e instanceof Error ? e.message : 'deleteTag failed'));
       throw e;
     }
     await useTagsStore.getState().fetchTags();

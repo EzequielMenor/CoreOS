@@ -12,8 +12,11 @@ const SYSTEM_PROMPT = `Eres un router de inbox. Clasifica el texto del usuario e
 
 Tipos:
 
-1. "nota" — ideas largas, reflexiones o conocimiento. Debes fragmentar el texto del usuario en múltiples notas atómicas (mini-ensayos) que capturen un único concepto cada una.
-   content: { "original_text": string, "atomic_notes": [ { "title": string, "body": string, "tags": string[] } ] }
+1. "nota" — ideas largas, reflexiones o conocimiento. El texto original ya está guardado; tú solo aportas clasificación y metadata.
+   content: { "title"?: string, "tags"?: string[] }
+   - "title": título corto sugerido (máx. 80 caracteres). Opcional.
+   - "tags": 0-5 etiquetas cortas sugeridas. Opcional.
+   - NO devuelvas el texto del usuario, NO lo reescribas, NO lo resumas, NO lo fragmentes. El cuerpo original ya está guardado.
 
 2. "gasto" — dinero gastado o ingreso.
    content: { "amount": number, "description": string, "category": string, "date": string (ISO 8601 o "today") }
@@ -34,9 +37,11 @@ IMPORTANTE: NO incluyas etiquetas , notas de razonamiento, ni texto introductori
 
 export type RouteType = 'nota' | 'gasto' | 'tarea' | 'habito' | 'sueno';
 
+// V1: el LLM solo aporta metadata para notas. El cuerpo es siempre
+// inbox.raw_text (lo inserta dispatchRoutedResult, nunca el LLM).
 export interface NotaContent {
-  original_text: string;
-  atomic_notes: { title: string; body: string; tags: string[] }[];
+  title?: string;
+  tags?: string[];
 }
 
 export type RoutedResult = { type: 'nota'; content: NotaContent }
@@ -48,7 +53,7 @@ interface LLMConfig {
   model: string;
 }
 
-async function getLLMConfig(): Promise<LLMConfig> {
+export async function getLLMConfig(): Promise<LLMConfig> {
   if (Platform.OS === 'web') {
     throw new Error('SecureStore no está disponible en web. Configura el proveedor de IA desde un dispositivo nativo.');
   }
@@ -106,7 +111,7 @@ export async function processInboxText(text: string): Promise<RoutedResult> {
   }
 
   const bodyObj = body as Record<string, unknown>;
-  const choices = bodyObj.choices as Array<Record<string, unknown>> | undefined;
+  const choices = bodyObj.choices as Record<string, unknown>[] | undefined;
   const rawContent = choices?.[0]?.message as Record<string, unknown> | undefined;
   const contentStr = rawContent?.content;
 
@@ -127,19 +132,8 @@ export async function processInboxText(text: string): Promise<RoutedResult> {
   try {
     parsed = JSON.parse(cleanResponse) as Record<string, unknown>;
   } catch {
-    return {
-      type: 'nota',
-      content: {
-        original_text: text,
-        atomic_notes: [
-          {
-            title: 'Nota Recuperada',
-            body: text,
-            tags: ['recuperada'],
-          },
-        ],
-      },
-    };
+    // JSON inválido → nota sin metadata; el cuerpo sale de inbox.raw_text.
+    return { type: 'nota', content: {} };
   }
 
   const type = parsed.type as string;
@@ -147,36 +141,24 @@ export async function processInboxText(text: string): Promise<RoutedResult> {
     throw new Error(`LLM response: type inválido "${type}"`);
   }
 
-  if (!parsed.content || typeof parsed.content !== 'object') {
-    throw new Error('LLM response: falta content o no es un objeto');
+  if (type === 'nota') {
+    // V1: content es SOLO metadata (title/tags). Se descarta cualquier otro
+    // campo que el LLM devuelva — el cuerpo nunca viene del LLM.
+    const raw =
+      parsed.content && typeof parsed.content === 'object'
+        ? (parsed.content as Record<string, unknown>)
+        : {};
+    const title = typeof raw.title === 'string' ? raw.title.trim() : '';
+    const tags = Array.isArray(raw.tags)
+      ? raw.tags.filter(
+          (t): t is string => typeof t === 'string' && t.trim().length > 0,
+        )
+      : [];
+    return { type: 'nota', content: { ...(title ? { title } : {}), tags } };
   }
 
-  if (type === 'nota') {
-    const content = parsed.content as Record<string, unknown>;
-    if (!Array.isArray(content.atomic_notes)) {
-      // Fallback: la IA devolvió formato legacy con title/body planos
-      const title = content.title as string | undefined;
-      const body = content.body as string | undefined;
-      const tags = content.tags as string[] | undefined;
-
-      if (title || body) {
-        parsed.content = {
-          original_text: text,
-          atomic_notes: [{
-            title: title ?? 'Nota sin título',
-            body: body ?? text,
-            tags: Array.isArray(tags) ? tags : [],
-          }],
-        };
-      } else {
-        // Degenerado: ni atomic_notes ni campos legacy
-        console.error('LLM: nota sin atomic_notes ni campos title/body legacy');
-        return {
-          type: 'nota',
-          content: { original_text: text, atomic_notes: [] },
-        } as RoutedResult;
-      }
-    }
+  if (!parsed.content || typeof parsed.content !== 'object') {
+    throw new Error('LLM response: falta content o no es un objeto');
   }
 
   return { type: type as RouteType, content: parsed.content as Record<string, unknown> } as RoutedResult;

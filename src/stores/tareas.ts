@@ -47,39 +47,13 @@ function setError(error: string | null): { error: string | null } {
   return { error };
 }
 
-// ── Mock mode para preview visual ──────────────────────────────────────────
-// ponytail: borrar este bloque cuando haya datos reales suficientes.
-const MOCK_MODE = false;
-const now = Date.now();
-const DAY = 86_400_000;
-const MOCK_TAREAS: TareaRow[] = [
-  { id: 1, title: 'Revisar PR del knowledge graph', due_date: '2026-07-22', priority: 'alta', status: 'pending', created_at: now - DAY * 1 },
-  { id: 2, title: 'Preparar presentación del proyecto', due_date: '2026-07-23', priority: 'alta', status: 'pending', created_at: now - DAY * 2 },
-  { id: 3, title: 'Actualizar dependencias de Expo SDK 57', due_date: '2026-07-24', priority: 'media', status: 'pending', created_at: now - DAY * 3 },
-  { id: 4, title: 'Escribir tests para el pipeline de inbox', due_date: '2026-07-25', priority: 'media', status: 'pending', created_at: now - DAY * 4 },
-  { id: 5, title: 'Diseñar mockups del heatmap de hábitos', due_date: null, priority: 'baja', status: 'pending', created_at: now - DAY * 5 },
-  { id: 6, title: 'Leer capítulo 5 de Clean Architecture', due_date: '2026-07-20', priority: 'baja', status: 'pending', created_at: now - DAY * 6 },
-  { id: 7, title: 'Configurar ESLint strict rules', due_date: null, priority: null, status: 'pending', created_at: now - DAY * 7 },
-  { id: 8, title: 'Migrar CaptureModal a useTheme()', due_date: '2026-07-19', priority: 'media', status: 'completed', created_at: now - DAY * 3 },
-  { id: 9, title: 'Añadir FTS5 a la tabla de notas', due_date: '2026-07-18', priority: 'alta', status: 'completed', created_at: now - DAY * 5 },
-  { id: 10, title: 'Refactor del store de ideas', due_date: '2026-07-17', priority: null, status: 'completed', created_at: now - DAY * 8 },
-];
-
 export const useTareasStore = create<TareasState>()((set, get) => ({
-  items: MOCK_MODE ? MOCK_TAREAS : [],
+  items: [],
   filter: { status: 'all' },
   loading: false,
   error: null,
 
   fetchItems: async () => {
-    if (MOCK_MODE) {
-      const f = get().filter;
-      const filtered = f.status === 'all'
-        ? MOCK_TAREAS
-        : MOCK_TAREAS.filter((t) => t.status === f.status);
-      set({ items: filtered, loading: false });
-      return;
-    }
     set({ loading: true, error: null });
     try {
       const items = await tareasRepo.listTareas(get().filter);

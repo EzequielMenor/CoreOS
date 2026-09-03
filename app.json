@@ -42,7 +42,19 @@
       "expo-secure-store",
       "expo-image",
       "expo-status-bar",
-      "expo-web-browser"
+      "expo-web-browser",
+      [
+        "expo-sharing",
+        {
+          "ios": {
+            "enabled": true,
+            "activationRule": {
+              "supportsText": true,
+              "supportsWebUrlWithMaxCount": 1
+            }
+          }
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

@@ -10,11 +10,12 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { Stack } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Picker } from '@react-native-picker/picker';
 import * as SecureStore from 'expo-secure-store';
 
-import { NoteSpacing } from '@/constants/theme';
+import { BottomTabInset, NoteSpacing, Radii } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { ButtonBrand } from '@/components/ButtonBrand';
 
@@ -115,107 +116,131 @@ export default function AjustesScreen() {
   return (
     <SafeAreaView
       style={[styles.container, { backgroundColor: theme.notes.bg.base }]}
-      edges={['top']}
+      edges={[]}
     >
-      <ScrollView contentContainerStyle={styles.content}>
-      <Text style={[styles.sectionTitle, { color: theme.notes.text.primary }]}>
-        Proveedor de IA
-      </Text>
-
-      <View style={styles.field}>
-        <Text style={[styles.label, { color: theme.notes.text.secondary }]}>Base URL</Text>
-        <TextInput
-          style={[
-            styles.input,
-            {
-              backgroundColor: theme.notes.bg.elevated,
-              borderColor: theme.notes.border.subtle,
-              color: theme.notes.text.primary,
-            },
-          ]}
-          value={baseUrl}
-          onChangeText={setBaseUrl}
-          placeholder="https://api.minimax.io/v1"
-          placeholderTextColor={theme.notes.text.muted}
-          autoCapitalize="none"
-          autoCorrect={false}
-          keyboardType="url"
-        />
-      </View>
-
-      <View style={styles.field}>
-        <Text style={[styles.label, { color: theme.notes.text.secondary }]}>API Key</Text>
-        <TextInput
-          style={[
-            styles.input,
-            {
-              backgroundColor: theme.notes.bg.elevated,
-              borderColor: theme.notes.border.subtle,
-              color: theme.notes.text.primary,
-            },
-          ]}
-          value={apiKey}
-          onChangeText={setApiKey}
-          placeholder="sk-..."
-          placeholderTextColor={theme.notes.text.muted}
-          autoCapitalize="none"
-          autoCorrect={false}
-          secureTextEntry
-        />
-        {Platform.OS !== 'web' && (
-          <Text style={[styles.hint, { color: theme.notes.text.muted }]}>
-            Se almacena de forma segura en el dispositivo.
+      <Stack.Screen options={{ title: 'Ajustes' }} />
+      
+      <ScrollView 
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: BottomTabInset + NoteSpacing['2xl'] }]}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.headerSection}>
+          <Text style={[styles.title, { color: theme.notes.text.primary }]}>
+            Ajustes
           </Text>
-        )}
-      </View>
+          <Text style={[styles.subtitle, { color: theme.notes.text.muted }]}>
+            Configura tu entorno de trabajo
+          </Text>
+        </View>
 
-      <View style={styles.field}>
-        <Text style={[styles.label, { color: theme.notes.text.secondary }]}>Modelo</Text>
-        {modelos.length === 0 ? (
-          <TouchableOpacity
-            style={[
-              styles.secondaryButton,
-              {
-                backgroundColor: theme.notes.bg.surface,
-                borderColor: theme.notes.border.subtle,
-              },
-            ]}
-            onPress={cargarModelos}
-            disabled={cargandoModelos}
-          >
-            <Text style={[styles.secondaryButtonText, { color: theme.notes.text.secondary }]}>
-              {cargandoModelos ? 'Cargando…' : 'Cargar modelos disponibles'}
-              {cargandoModelos && (
-                <ActivityIndicator
-                  size="small"
-                  color={theme.notes.text.secondary}
-                  style={{ marginLeft: NoteSpacing.sm }}
-                />
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: theme.notes.text.secondary }]}>
+            PROVEEDOR DE IA
+          </Text>
+          
+          <View style={[styles.card, { backgroundColor: theme.notes.bg.surface, borderColor: theme.notes.border.subtle }]}>
+            <View style={styles.field}>
+              <Text style={[styles.label, { color: theme.notes.text.primary }]}>Base URL</Text>
+              <TextInput
+                style={[
+                  styles.input,
+                  {
+                    backgroundColor: theme.notes.bg.elevated,
+                    borderColor: theme.notes.border.strong,
+                    color: theme.notes.text.primary,
+                  },
+                ]}
+                value={baseUrl}
+                onChangeText={setBaseUrl}
+                placeholder="https://api.minimax.io/v1"
+                placeholderTextColor={theme.notes.text.muted}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="url"
+              />
+            </View>
+
+            <View style={styles.field}>
+              <Text style={[styles.label, { color: theme.notes.text.primary }]}>API Key</Text>
+              <TextInput
+                style={[
+                  styles.input,
+                  {
+                    backgroundColor: theme.notes.bg.elevated,
+                    borderColor: theme.notes.border.strong,
+                    color: theme.notes.text.primary,
+                  },
+                ]}
+                value={apiKey}
+                onChangeText={setApiKey}
+                placeholder="sk-..."
+                placeholderTextColor={theme.notes.text.muted}
+                autoCapitalize="none"
+                autoCorrect={false}
+                secureTextEntry
+              />
+              {Platform.OS !== 'web' && (
+                <Text style={[styles.hint, { color: theme.notes.text.muted }]}>
+                  Se almacena de forma segura en el dispositivo.
+                </Text>
               )}
-            </Text>
-          </TouchableOpacity>
-        ) : (
-          <Picker
-            selectedValue={model}
-            onValueChange={setModel}
-            style={[styles.picker, { backgroundColor: theme.notes.bg.elevated }]}
-          >
-            {modelos.map(m => (
-              <Picker.Item key={m} label={m} value={m} />
-            ))}
-          </Picker>
-        )}
-      </View>
+            </View>
 
-      <View style={styles.buttonContainer}>
-        <ButtonBrand
-          title={saving ? 'Guardando…' : 'Guardar Configuración'}
-          onPress={guardar}
-          loading={saving}
-          variant="primary"
-          size="md"
-        />
-      </View>
+            <View style={styles.field}>
+              <Text style={[styles.label, { color: theme.notes.text.primary }]}>Modelo</Text>
+              {modelos.length === 0 ? (
+                <TouchableOpacity
+                  style={[
+                    styles.secondaryButton,
+                    {
+                      backgroundColor: theme.notes.bg.elevated,
+                      borderColor: theme.notes.border.strong,
+                    },
+                  ]}
+                  onPress={cargarModelos}
+                  disabled={cargandoModelos}
+                >
+                  <View style={styles.secondaryButtonContent}>
+                    <Text style={[styles.secondaryButtonText, { color: theme.notes.text.secondary }]}>
+                      {cargandoModelos ? 'Cargando…' : 'Cargar modelos disponibles'}
+                    </Text>
+                    {cargandoModelos && (
+                      <ActivityIndicator
+                        size="small"
+                        color={theme.notes.text.secondary}
+                        style={{ marginLeft: NoteSpacing.sm }}
+                      />
+                    )}
+                  </View>
+                </TouchableOpacity>
+              ) : (
+                <View style={[styles.pickerContainer, { backgroundColor: theme.notes.bg.elevated, borderColor: theme.notes.border.strong }]}>
+                  <Picker
+                    selectedValue={model}
+                    onValueChange={setModel}
+                    style={{ color: theme.notes.text.primary }}
+                    dropdownIconColor={theme.notes.text.secondary}
+                  >
+                    {modelos.map(m => (
+                      <Picker.Item key={m} label={m} value={m} color={Platform.OS === 'ios' ? theme.notes.text.primary : undefined} />
+                    ))}
+                  </Picker>
+                </View>
+              )}
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.buttonContainer}>
+          <ButtonBrand
+            title={saving ? 'Guardando…' : 'Guardar Configuración'}
+            onPress={guardar}
+            loading={saving}
+            variant="primary"
+            size="md"
+          />
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -225,17 +250,40 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  content: {
-    padding: NoteSpacing.md,
-    gap: NoteSpacing.md,
+  scrollContent: {
+    paddingHorizontal: NoteSpacing.lg,
+    paddingTop: NoteSpacing.lg,
   },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
+  headerSection: {
+    marginBottom: NoteSpacing.xl,
+  },
+  title: {
+    fontSize: 28,
+    fontWeight: '700',
+    letterSpacing: -0.5,
     marginBottom: 4,
   },
+  subtitle: {
+    fontSize: 15,
+  },
+  section: {
+    marginBottom: NoteSpacing.xl,
+  },
+  sectionTitle: {
+    fontFamily: 'ui-monospace',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    marginBottom: NoteSpacing.md,
+  },
+  card: {
+    borderWidth: 1,
+    borderRadius: Radii.md,
+    padding: NoteSpacing.lg,
+    gap: NoteSpacing.lg,
+  },
   field: {
-    gap: 6,
+    gap: 8,
   },
   label: {
     fontSize: 14,
@@ -243,39 +291,38 @@ const styles = StyleSheet.create({
   },
   input: {
     borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    borderRadius: Radii.md,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     fontSize: 16,
   },
-  picker: {
-    borderRadius: 8,
+  pickerContainer: {
+    borderWidth: 1,
+    borderRadius: Radii.md,
+    overflow: 'hidden',
   },
   secondaryButton: {
     borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    borderRadius: Radii.md,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  secondaryButtonText: {
-    fontSize: 16,
-    textAlign: 'center',
+  secondaryButtonContent: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+  },
+  secondaryButtonText: {
+    fontSize: 15,
+    fontWeight: '500',
   },
   hint: {
-    fontSize: 12,
+    fontSize: 13,
     marginTop: 2,
   },
   buttonContainer: {
     marginTop: NoteSpacing.sm,
-  },
-  button: {
-    textAlign: 'center',
-    paddingVertical: 14,
-    borderRadius: 8,
-    fontSize: 16,
-    fontWeight: '600',
-    overflow: 'hidden',
   },
 });

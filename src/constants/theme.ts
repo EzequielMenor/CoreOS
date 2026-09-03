@@ -4,7 +4,7 @@
  *
  * El namespace `notes.*` (subobjetos en `Colors.{light,dark}.notes` y los
  * consts `Radii` / `IconSize` / `ZIndex` / `NoteSpacing` / `Typography` /
- * `Shadows`) es la extensión aditiva para Notes v1 (ver docs/sdd/.../design.md §1).
+ * `Shadows`) es la extensión aditiva para Notes v1 (ver docs/sdd/active/centro-control-ia-status/design.md §1).
  * Los 5 colores planos superiores se mantienen para retrocompat con
  * `ThemedText` / `ThemedView` / `CaptureModal` / `AppTabs`.
  */
@@ -29,6 +29,7 @@ export const Colors = {
         base: '#F6F2EA',
         surface: '#FBF8F2',
         elevated: '#FFFFFF',
+        overlay: 'rgba(0,0,0,0.4)',
         hover: '#EFEAE0',
       },
       border: {
@@ -77,6 +78,7 @@ export const Colors = {
         base: '#141312',
         surface: '#1C1B19',
         elevated: '#252421',
+        overlay: 'rgba(0,0,0,0.55)',
         hover: '#302E2A',
       },
       border: {

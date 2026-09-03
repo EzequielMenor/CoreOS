@@ -2,7 +2,7 @@ import { create } from 'zustand';
 
 type SectionFilter = 'all' | 'pinned' | 'inbox';
 type EditorMode = 'create' | 'edit';
-type EditorDomain = 'note' | 'tarea' | 'gasto';
+type EditorDomain = 'note' | 'tarea' | 'gasto' | 'sueno';
 
 interface UiState {
   isEditorOpen: boolean;

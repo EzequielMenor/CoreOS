@@ -19,8 +19,9 @@ insert estructurado en SQLite. Sin backend, sin auth, sin multi-tenant.
   *quantified self* (gastos, tareas, hábitos, sueño).
 - **Estado:** MVP+ en desarrollo activo. La pestaña *Notas* tiene CRUD + FTS5
   + editor Markdown + tags. *Ideas* ejecuta el pipeline completo de inbox.
-  *Gastos*, *Tareas*, *Hábitos* y *Sueño* son vistas de solo lectura; el CRUD
-  real solo funciona vía el pipeline LLM.
+  *Gastos* y *Tareas* tienen CRUD completo en UI. *Hábitos* y *Sueño* están en 
+  proceso de añadir su CRUD (actualmente interactivos solo vía pipeline LLM 
+  o toggles básicos).
 - **Repo:** privado, single branch (`main`), sin CI configurada.
 
 ---
@@ -393,8 +394,8 @@ EncryptedSharedPreferences Android). Keys registrados:
 |---|--------|----------------------|
 | 1 | **Drift de timestamps** | Notas legacy: `Date.now()` (ms). Notas v1: `unixepoch()` (s). Documentado en `src/db/queries/notes.ts:6`. |
 | 2 | **SecureStore en web** | `getLLMConfig()` lanza en `SecureStore.*` si la plataforma es web. LLM no usable desde navegador. |
-| 3 | **Pantallas básicas de solo lectura** | `gastos.tsx`, `tareas.tsx`, `habitos.tsx`, `sueno.tsx` son listas read-only con `getFromDb()` directo — sin store Zustand ni UI de CRUD. CRUD real solo vía pipeline LLM. |
-| 4 | **CaptureModal sin tema** | `src/components/CaptureModal.tsx` lleva colores hardcoded (white/black). No tematiza. Pendiente de migrar a `useTheme()`. |
+| 3 | **Pantallas básicas** | `habitos.tsx`, `sueno.tsx` son listas con CRUD limitado en UI. El CRUD real entra vía pipeline LLM. `gastos.tsx` y `tareas.tsx` SÍ tienen CRUD completo en UI. |
+| 4 | **CaptureModal** | `src/components/CaptureModal.tsx` usa `useTheme()`. Ya no tiene colores hardcoded. |
 | 5 | **Sin test infra** | Cualquier cambio queda sin verificar automáticamente. Si añades, usa `jest-preset-expo`. |
 | 6 | **Mutex en `processPendingInbox`** | `_batchInFlight` global. Tests que disparen batches deben drainar el lock o usar `processInboxItem()` directo. |
 | 7 | **Tabs nativos iOS-only** | `unstable-native-tabs` solo aplica en iOS. Android/web caen a render alternativo. |

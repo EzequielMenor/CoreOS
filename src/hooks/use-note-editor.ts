@@ -24,6 +24,7 @@ import type {
   UpdateNoteInput,
 } from '@/db/queries/notes';
 import { haptic } from '@/lib/animations';
+import { setPendingSave } from '@/lib/note-save-gate';
 
 const AUTO_SAVE_DEBOUNCE_MS = 3000;
 
@@ -311,10 +312,13 @@ export function useNoteEditor(opts: UseNoteEditorOptions): UseNoteEditorResult {
   }, [flushSave]);
 
   // Flush on route blur.
+  // ponytail: el cleanup de useFocusEffect no soporta await. Registramos la
+  // Promise de flushSave en el note-save-gate para que la lista la drene
+  // antes de su fetchSections y no lea estado anterior al INSERT.
   useFocusEffect(
     useCallback(
       () => () => {
-        void flushSave();
+        setPendingSave(flushSave());
       },
       [flushSave],
     ),

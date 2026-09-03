@@ -78,8 +78,10 @@ const exitTiming = {
  * @param targetX Coordenada X final (negativa = swipe-left, positiva = swipe-right).
  */
 const swipeThresholdTiming = {
-  apply: (translateX_sv: SharedValue<number>, targetX: number) =>
-    withTiming(targetX, { duration: 180, easing: Easing.out(Easing.quad) }),
+  apply: (translateX_sv: SharedValue<number>, targetX: number) => {
+    'worklet';
+    return withTiming(targetX, { duration: 180, easing: Easing.out(Easing.quad) });
+  },
 };
 
 /**
@@ -90,8 +92,10 @@ const swipeThresholdTiming = {
  * @param translateX_sv SharedValue<number> que controla la X del card.
  */
 const swipeReturnSpring = {
-  apply: (translateX_sv: SharedValue<number>) =>
-    withSpring(0, { damping: 18, stiffness: 180 }),
+  apply: (translateX_sv: SharedValue<number>) => {
+    'worklet';
+    return withSpring(0, { damping: 18, stiffness: 180 });
+  },
 };
 
 /**
