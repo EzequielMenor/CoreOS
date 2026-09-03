@@ -17,12 +17,12 @@ insert estructurado en SQLite. Sin backend, sin auth, sin multi-tenant.
 - **Bundle iOS:** `com.coreos.zettelkasten` · **scheme:** `coreos`
 - **Dominio:** gestión personal del conocimiento (estilo zettelkasten) +
   *quantified self* (gastos, tareas, hábitos, sueño).
-- **Estado:** MVP+ en desarrollo activo. La pestaña *Notas* tiene CRUD + FTS5
-  + editor Markdown + tags. *Ideas* ejecuta el pipeline completo de inbox.
-  *Gastos* y *Tareas* tienen CRUD completo en UI. *Hábitos* y *Sueño* están en 
-  proceso de añadir su CRUD (actualmente interactivos solo vía pipeline LLM 
-  o toggles básicos).
-- **Repo:** privado, single branch (`main`), sin CI configurada.
+- **Estado (V1):** 3 tabs (Hoy, Capturar, Biblioteca). Secundarias: `/tareas`,
+  `/ajustes`. Captura también por share intent (`capture-share.tsx`).
+  *Biblioteca* tiene CRUD + FTS5 + editor Markdown + tags. *Capturar* ejecuta
+  el pipeline completo de inbox. *Tareas* tiene CRUD completo en UI.
+- **Repo:** **público** ([github.com/EzequielMenor/CoreOS](https://github.com/EzequielMenor/CoreOS)),
+  single branch (`main`), sin CI configurada.
 
 ---
 
@@ -31,10 +31,10 @@ insert estructurado en SQLite. Sin backend, sin auth, sin multi-tenant.
 | Capa | Tecnología | Versión |
 |------|-----------|---------|
 | Runtime | React Native | `0.86.0` |
-| Framework | Expo SDK | `~57.0.6` |
-| Router | `expo-router` (file-based) | `~57.0.6` |
-| Tabs nativos | `expo-router` `unstable-native-tabs` (`NativeTabs`) | 7 pestañas |
-| UI cross-platform | `@expo/ui` | `~57.0.6` |
+| Framework | Expo SDK | `~57.0.8` |
+| Router | `expo-router` (file-based) | `~57.0.8` |
+| Tabs nativos | `expo-router` `unstable-native-tabs` (`NativeTabs`) | 3 pestañas |
+| UI cross-platform | `@expo/ui` | `~57.0.7` |
 | Lenguaje | TypeScript (strict) | `~6.0.3` |
 | React | React 19 | `19.2.3` |
 | Estado | `zustand` | `^5.0.14` |
@@ -47,10 +47,16 @@ insert estructurado en SQLite. Sin backend, sin auth, sin multi-tenant.
 | Toasts | `react-native-toast-message` | `^2.4.0` |
 | Almacenamiento seguro | `expo-secure-store` | `~57.0.1` |
 | Haptics / efectos | `expo-haptics`, `expo-glass-effect` | `~57.0.1` |
+| Pickers | `@react-native-picker/picker` | `2.11.4` |
+| Share intent | `expo-sharing` | `~57.0.7` |
+| Deeplinks | `expo-linking` | `~57.0.4` |
+| Webview | `react-native-webview` | `^14.0.1` |
+| Info dispositivo | `expo-device` | `~57.0.1` |
+| Constantes Expo | `expo-constants` | `~57.0.3` |
 | Web runtime | `react-native-web` | `~0.21.0` |
 | Lint | ESLint 9 + `eslint-config-expo` (flat config) | `~57.0.0` / `^9.0.0` |
 | Babel | `babel-preset-expo` + `react-native-worklets/plugin` | — |
-| Gestor | npm (sin lockfile comprometido) | — |
+| Gestor | npm (lockfile `package-lock.json` commiteado) | — |
 
 **Path aliases** (`tsconfig.json`):
 - `@/*` → `./src/*`
@@ -66,14 +72,14 @@ insert estructurado en SQLite. Sin backend, sin auth, sin multi-tenant.
 ### Capas
 
 ```
-src/app/         ENTRY     — 11 pantallas, expo-router file-based, 7 NativeTabs
-src/stores/      CORE      — 4 stores Zustand (notes, ideas, tags, ui)
-src/components/  INTERNO   — 29 componentes UI compartidos
+src/app/         ENTRY     — 9 rutas de pantalla, expo-router file-based, 3 NativeTabs
+src/stores/      CORE      — Zustand: notes, tags, ui, tareas (gastos/sueno huérfanos, sin UI)
+src/components/  INTERNO   — UI compartidos + briefing (Cabecera, TareasPrioritarias)
 src/db/          CORE      — singleton SQLite (hotspot, fan-in alto)
-src/db/queries/  CORE      — módulos de query por dominio (notes, ideas, tags)
+src/db/queries/  CORE      — notes, tags, tareas activas (gastos/habitos/sueno sin UI)
 src/services/    ENTRY     — cliente LLM, orquestación inbox
-src/hooks/       CORE      — useTheme (fan-in 31), useColorScheme
-src/lib/         CORE      — presets Reanimated + haptics
+src/hooks/       CORE      — useTheme, useColorScheme, useNoteEditor
+src/lib/         CORE      — animations (Reanimated + haptics), note-save-gate
 src/constants/   CORE      — tokens de tema (read-only)
 ```
 
@@ -81,14 +87,16 @@ src/constants/   CORE      — tokens de tema (read-only)
 
 ```
 Entrada libre (texto)
-  → CaptureModal / QuickCaptureInput
-  → insertInbox(raw_text)                     [db]
+  → tab Capturar / share intent (`capture-share`) / deeplink `coreos://capture`
+  → insertInbox(raw_text)                     [db]   persistencia inmediata
   → processPendingInbox()                     [services/inbox.ts, mutex batch]
       → processInboxItem()                    [services/inbox.ts]
           → processInboxText()                [services/llm.ts]   HTTP → MiniMax
       → RouteType { nota | gasto | tarea | habito | sueno }
-  → dispatchRoutedResult(type, content)       [db/index.tsx 436-537]
+  → dispatchRoutedResult(type, content, raw_text)  [db/index.tsx ~L656]
       → INSERT en tabla correspondiente
+  → Nota: `raw_text` es fuente canónica; captura tipo nota = UNA nota
+    con `body_md = raw_text` exacto (LLM solo aporta title/tags).
   → Stores Zustand refrescan en focus
   → Pantalla renderiza vía FlatList / SectionList
 ```
@@ -103,9 +111,18 @@ Entrada libre (texto)
    `useTheme()` (ADR-001 implícito).
 5. **No `withTransactionAsync` dentro de `dispatchRoutedResult`.** Invariante
    dura documentada como `// I1` en `src/services/inbox.ts`.
-6. **Timestamps en `unixepoch()` (segundos)** para el esquema v1 de notas.
-   Las notas *legacy* del dispatcher usan `Date.now()` (ms) — hay drift
-   conocido (ver §12).
+6. **I2: UPDATE con guard `WHERE status='pending'` va ANTES que
+   `dispatchRoutedResult`.** Sin esto, dos batches concurrentes podrían
+   duplicar notas.
+7. **I3: Procesamiento de items es secuencial** (`for/await`, nunca
+   `Promise.all`). Mantiene orden de captura y evita contention.
+8. **I4: Las funciones exportadas de `inbox.ts` nunca lanzan** — siempre
+   retornan `ProcessResult` o `BatchResult`. Tragan errores; el caller
+   decide reintentar.
+9. **Timestamps en `unixepoch()` (segundos)** para `notes.created_at` /
+   `notes.updated_at` desde la migración v3 (`v3_notes_ts_seconds`). Las
+   tablas `gastos` / `tareas` / `habitos_log` / `sueno_log` / `inbox`
+   siguen usando `Date.now()` (ms) — sin normalizar.
 
 ---
 
@@ -127,15 +144,15 @@ CoreOS/
 ├── scripts/
 │   └── reset-project.js         Reset a scaffold Expo en blanco
 ├── src/
-│   ├── app/                     expo-router: 7 tabs + rutas anidadas
+│   ├── app/                     expo-router: 3 tabs + rutas anidadas
 │   ├── components/              Primitivos UI + componentes compuestos
 │   ├── constants/               Tokens tema (Colors, Radii, Spacing, Typography)
 │   ├── db/
 │   │   └── queries/             Módulos de query por dominio
-│   ├── hooks/                   useTheme, useColorScheme
-│   ├── lib/                     animations.ts + haptics
+│   ├── hooks/                   useTheme, useColorScheme, useNoteEditor
+│   ├── lib/                     animations.ts + note-save-gate
 │   ├── services/                llm.ts, inbox.ts
-│   └── stores/                  Zustand stores (notes, ideas, tags, ui)
+│   └── stores/                  Zustand stores (notes, tags, ui, tareas)
 ├── docs/
 │   └── sdd/                     Spec-Driven Development (ver §6)
 │       ├── active/              Fases SDD en curso
@@ -157,27 +174,21 @@ CoreOS/
 
 | Ruta | Archivo | Origen | Tipo |
 |------|---------|--------|------|
-| `/` | `src/app/index.tsx` | Hub | Tab |
-| `/notas` | `src/app/notas/index.tsx` | Notas | Tab |
-| `/notas/new` | `src/app/notas/new.tsx` | — | Stack push |
-| `/notas/[id]` | `src/app/notas/[id].tsx` | — | Stack |
-| `/notas/[id]/edit` | `src/app/notas/[id]/edit.tsx` | — | Stack (oculta) |
-| `/ideas` | `src/app/ideas/index.tsx` | (push desde Hub) | Stack |
-| `/tareas` | `src/app/tareas.tsx` | Tareas | Tab |
-| `/gastos` | `src/app/gastos.tsx` | Gastos | Tab |
-| `/habitos` | `src/app/habitos.tsx` | Hábitos | Tab |
-| `/sueno` | `src/app/sueno.tsx` | Sueño | Tab |
-| `/ajustes` | `src/app/ajustes.tsx` | Ajustes | Tab |
+| `/` | `src/app/(tabs)/index.tsx` | Hoy | Tab |
+| `/capturar` | `src/app/(tabs)/capturar.tsx` | Capturar | Tab |
+| `/notas` | `src/app/(tabs)/notas/index.tsx` | Biblioteca | Tab |
+| `/notas/new` | `src/app/(tabs)/notas/new.tsx` | — | Stack push |
+| `/notas/[id]` | `src/app/(tabs)/notas/[id].tsx` | — | Stack |
+| `/notas/[id]/edit` | `src/app/(tabs)/notas/[id]/edit.tsx` | — | Stack (oculta) |
+| `/tareas` | `src/app/tareas.tsx` | Tareas | Stack (secundaria) |
+| `/ajustes` | `src/app/ajustes.tsx` | Ajustes | Stack (secundaria) |
+| `/capture-share` | `src/app/capture-share.tsx` | Share intent | Stack (oculta) |
 
-### Tab bar (7 fijas, definidas en `src/components/app-tabs.tsx`)
+### Tab bar (3 fijas, definidas en `src/components/app-tabs.tsx`)
 
-1. **Home** — `house.fill`
-2. **Notas** — `doc.text.fill`
-3. **Tareas** — `checkmark.circle.fill`
-4. **Gastos** — `eurosign.circle.fill`
-5. **Hábitos** — `flame.fill`
-6. **Sueño** — `moon.zzz.fill`
-7. **Ajustes** — `gearshape.fill`
+1. **Hoy** — `house.fill`
+2. **Capturar** — `square.and.pencil`
+3. **Biblioteca** — `doc.text.fill`
 
 ### Servicios
 
@@ -310,19 +321,22 @@ Output web es `static` (`app.json`).
 | Término | Definición | Dónde vive |
 |---------|-----------|-----------|
 | **Inbox** | Cola de captura cruda. Texto libre → tabla `inbox` → LLM → dispatch. | `src/db/index.tsx`, `src/services/inbox.ts` |
-| **Notas** | Artefacto principal: título + `body_md` + tags. Buscable por FTS5. | `src/db/queries/notes.ts`, `src/stores/notes.ts`, `src/app/notas/` |
-| **Ideas** | Snippets de 3 estados: `inbox` → `processed` (nota) o `discarded`. | `src/db/queries/ideas.ts`, `src/stores/ideas.ts`, `src/app/ideas/` |
-| **Gastos** | Gastos: amount, descripción, categoría, fecha. | tabla `gastos`, `src/app/gastos.tsx` |
-| **Tareas** | Tareas: título, due_date, prioridad, status. | tabla `tareas`, `src/app/tareas.tsx` |
-| **Hábitos** | Hábito por día: `habit_name`, status, fecha. | tabla `habitos_log`, `src/app/habitos.tsx` |
-| **Sueño** | Registro de sueño: hours, deep_sleep_percentage, quality, fecha. | tabla `sueno_log`, `src/app/sueno.tsx` |
+| **Hoy** | Tab raíz: tareas del día + chip de capturas por clasificar. | `src/app/(tabs)/index.tsx` + `src/components/briefing/` |
+| **Capturar** | Tab de captura rápida: textarea única → `insertInbox()` → batch. | `src/app/(tabs)/capturar.tsx` |
+| **Biblioteca** | Tab de notas: CRUD + búsqueda FTS5 + filtros tags. | `src/app/(tabs)/notas/`, `src/stores/notes.ts` |
+| **capture-share** | Ruta oculta para share intents del SO (`src/app/capture-share.tsx`). | `src/app/capture-share.tsx` |
+| **Notas** | Artefacto principal: título + `body_md` + tags. Buscable por FTS5. | `src/db/queries/notes.ts`, `src/stores/notes.ts`, `src/app/(tabs)/notas/` |
+| **Gastos** | Gastos: amount, descripción, categoría, fecha. | tabla `gastos`, `src/app/gastos.tsx` (sin UI pública en V1) |
+| **Tareas** | Tareas: título, due_date, prioridad, status. | tabla `tareas`, `src/db/queries/tareas.ts`, `src/app/tareas.tsx`, `src/stores/tareas.ts` |
+| **Hábitos** | Hábito por día: `habit_name`, status, fecha. | tabla `habitos_log` (sin UI en V1; entra vía LLM) |
+| **Sueño** | Registro de sueño: hours, deep_sleep_percentage, quality, fecha. | tabla `sueno_log` (sin UI en V1; entra vía LLM) |
 | **Tags** | Etiquetas many-to-many vía `tags` + `note_tags`. Filtrables en lista. | `src/db/queries/tags.ts`, `src/stores/tags.ts` |
 | **RouteType** | Output del LLM: `nota` \| `gasto` \| `tarea` \| `habito` \| `sueno`. | `src/services/llm.ts` |
-| **dispatchRoutedResult** | INSERT en la tabla correcta según `RouteType`. | `src/db/index.tsx:436-537` |
+| **dispatchRoutedResult** | INSERT en la tabla correcta. Firma `(type, content, rawText)`. | `src/db/index.tsx:656` |
+| **normalizeDueDate** | Parsea `due_date` libre (`hoy`, `mañana`, ISO, d/m/y) → `YYYY-MM-DD`. | `src/db/queries/tareas.ts` |
 | **FTS5** | Búsqueda full-text SQLite, tokenizer `porter unicode61`, ranking `bm25`. | tabla `notes_fts` + triggers |
 | **MarkdownToolbar** | Toolbar inline del editor (bold, italic, headers, code, link, checklist). | `src/components/MarkdownToolbar.tsx` |
 | **AutoSaveDot** | Indicador de guardado: naranja pulsante = dirty, verde estático = saved. | `src/components/AutoSaveDot.tsx` |
-| **CaptureModal** | Modal de captura rápida (sin tematizar todavía — ver §12). | `src/components/CaptureModal.tsx` |
 | **Ponytail** | Filosofía dev anotada con `// ponytail:` en código — YAGNI con techo. | ~40+ sitios en `src/` |
 
 ---
@@ -392,27 +406,46 @@ EncryptedSharedPreferences Android). Keys registrados:
 
 | # | Trampa | Detalle / mitigación |
 |---|--------|----------------------|
-| 1 | **Drift de timestamps** | Notas legacy: `Date.now()` (ms). Notas v1: `unixepoch()` (s). Documentado en `src/db/queries/notes.ts:6`. |
+| 1 | **Drift de timestamps** | Notas v1: `unixepoch()` (s) tras migración `v3_notes_ts_seconds`. Las tablas `gastos` / `tareas` / `habitos_log` / `sueno_log` / `inbox` siguen en ms (`Date.now()`). Documentado en `src/db/queries/notes.ts:6`. |
 | 2 | **SecureStore en web** | `getLLMConfig()` lanza en `SecureStore.*` si la plataforma es web. LLM no usable desde navegador. |
 | 3 | **Pantallas básicas** | `habitos.tsx`, `sueno.tsx` son listas con CRUD limitado en UI. El CRUD real entra vía pipeline LLM. `gastos.tsx` y `tareas.tsx` SÍ tienen CRUD completo en UI. |
-| 4 | **CaptureModal** | `src/components/CaptureModal.tsx` usa `useTheme()`. Ya no tiene colores hardcoded. |
-| 5 | **Sin test infra** | Cualquier cambio queda sin verificar automáticamente. Si añades, usa `jest-preset-expo`. |
-| 6 | **Mutex en `processPendingInbox`** | `_batchInFlight` global. Tests que disparen batches deben drainar el lock o usar `processInboxItem()` directo. |
-| 7 | **Tabs nativos iOS-only** | `unstable-native-tabs` solo aplica en iOS. Android/web caen a render alternativo. |
-| 8 | **`react-native-reanimated` 4 API** | `useAnimatedGestureHandler` eliminado. Usa `Gesture.Pan()` + worklets. |
-| 9 | **`react-compiler` experimental** | Hooks pueden comportarse de forma no intuitiva. Si ves algo raro, comprueba que el compilador no esté optimizando mal. |
-| 10 | **`NoteSpacing['2xl']`** | Único spacing token nuevo (48px). Notación con bracket por TS. |
-| 11 | **Sin scripts `test`/`build`/`typecheck`** | Usa `npx tsc --noEmit` directamente. No hay `npm run build`. |
-| 12 | **`react-native-web` ~0.21.0** | Versión mayor del bundler web; algunas APIs nativas no shimmean (ej. SecureStore). |
+| 4 | **Sin test infra** | Cualquier cambio queda sin verificar automáticamente. Si añades, usa `jest-preset-expo`. |
+| 5 | **Mutex en `processPendingInbox`** | `_batchInFlight` global. Tests que disparen batches deben drainar el lock o usar `processInboxItem()` directo. |
+| 6 | **Tabs nativos iOS-only** | `unstable-native-tabs` solo aplica en iOS. Android/web caen a render alternativo. |
+| 7 | **`react-native-reanimated` 4 API** | `useAnimatedGestureHandler` eliminado. Usa `Gesture.Pan()` + worklets. |
+| 8 | **`react-compiler` experimental** | Hooks pueden comportarse de forma no intuitiva. Si ves algo raro, comprueba que el compilador no esté optimizando mal. |
+| 9 | **`NoteSpacing['2xl']`** | Único spacing token nuevo (48px). Notación con bracket por TS. |
+| 10 | **Sin scripts `test`/`build`/`typecheck`** | Usa `npx tsc --noEmit` directamente. No hay `npm run build`. |
+| 11 | **`react-native-web` ~0.21.0** | Versión mayor del bundler web; algunas APIs nativas no shimmean (ej. SecureStore). |
+| 12 | **Repo público: cero secrets** | El repo es público. Todo lo sensible va a `expo-secure-store`. Nunca commitear `.env`, API keys ni dumps con datos personales. |
 
 ### Comentarios que merecen respeto
 
 - `// ponytail:` en código → marca simplificación deliberada. Léelo antes de
   "mejorar" esa función.
-- `// I1`, `// I2` en `src/services/inbox.ts` → invariantes duras. No se
-  negocian.
+- `// I1`, `// I2`, `// I3`, `// I4` en `src/services/inbox.ts` → invariantes
+  duras. No se negocian.
 - Cambia `// ponytail:` por su upgrade path *solo* cuando la métrica que
   nombra (throughput, latencia, etc.) realmente lo justifique.
+
+---
+
+## Fuera de V1
+
+Decisiones tomadas y features conscientemente fuera del alcance actual.
+No las implementes sin una fase SDD previa (`docs/sdd/`).
+
+- **UI de gastos / hábitos / sueño.** Las tablas existen y el pipeline LLM
+  las rellena; las pantallas públicas están pendientes (datos a salvo).
+- **Ideas (artefacto separado).** Eliminado en v3; las ideas legacy se
+  copiaron a notas.
+- **AI Console / debug de prompts.** No hay UI de inspección de la
+  respuesta LLM en V1.
+- **Graph / embeddings.** La tabla `note_embeddings` existe en esquema pero
+  no hay generación ni consulta. Feature fuera.
+- **Hermes vs JSC.** V1 va con el motor por defecto (Hermes en
+  release, JSC en dev según Expo).
+- **Backend, sync, multi-user.** Decisión de diseño local-first (ver §11).
 
 ---
 
@@ -424,35 +457,35 @@ Qualified names para `codebase-memory` (`codebase-memory_search_graph`,
 | Qualified name | Archivo | Propósito |
 |------|-----------|-----------|
 | `CoreOS.src.app._layout.TabLayout` | `src/app/_layout.tsx` | Root layout, init app |
-| `CoreOS.src.app.HomeScreen` | `src/app/index.tsx` | Hub home |
-| `CoreOS.src.app.notas.NotesListScreen` | `src/app/notas/index.tsx` | Lista notas + búsqueda + tags |
-| `CoreOS.src.app.notas.[id].NoteDetailScreen` | `src/app/notas/[id].tsx` | Detalle nota |
-| `CoreOS.src.app.notas.new.NewNoteScreen` | `src/app/notas/new.tsx` | Editor nueva nota |
-| `CoreOS.src.app.notas.[id].edit.NoteEditorScreen` | `src/app/notas/[id]/edit.tsx` | Editor edición |
-| `CoreOS.src.app.ideas.IdeasInboxScreen` | `src/app/ideas/index.tsx` | Inbox ideas (3 estados) |
-| `CoreOS.src.app.gastos.GastosScreen` | `src/app/gastos.tsx` | Lista gastos |
-| `CoreOS.src.app.tareas.TareasScreen` | `src/app/tareas.tsx` | Lista tareas |
-| `CoreOS.src.app.habitos.HabitosScreen` | `src/app/habitos.tsx` | Lista hábitos |
-| `CoreOS.src.app.sueno.SuenoScreen` | `src/app/sueno.tsx` | Lista sueño |
-| `CoreOS.src.app.ajustes.AjustesScreen` | `src/app/ajustes.tsx` | Ajustes |
-| `CoreOS.src.components.app-tabs.AppTabs` | `src/components/app-tabs.tsx` | NativeTabs bar (7 entradas) |
-| `CoreOS.src.db.getDb` | `src/db/index.tsx` | Singleton SQLite (hotspot, fan-in 31) |
+| `CoreOS.src.app.HomeScreen` | `src/app/(tabs)/index.tsx` | Tab "Hoy" (briefing) |
+| `CoreOS.src.app.capturar.CapturarScreen` | `src/app/(tabs)/capturar.tsx` | Tab "Capturar" (textarea + batch) |
+| `CoreOS.src.app.notas.NotesListScreen` | `src/app/(tabs)/notas/index.tsx` | Tab "Biblioteca" (lista + búsqueda + tags) |
+| `CoreOS.src.app.notas.[id].NoteDetailScreen` | `src/app/(tabs)/notas/[id].tsx` | Detalle nota |
+| `CoreOS.src.app.notas.new.NewNoteScreen` | `src/app/(tabs)/notas/new.tsx` | Editor nueva nota |
+| `CoreOS.src.app.notas.[id].edit.NoteEditorScreen` | `src/app/(tabs)/notas/[id]/edit.tsx` | Editor edición |
+| `CoreOS.src.app.tareas.TareasScreen` | `src/app/tareas.tsx` | Lista + CRUD tareas |
+| `CoreOS.src.app.ajustes.AjustesScreen` | `src/app/ajustes.tsx` | Ajustes (incluye config LLM) |
+| `CoreOS.src.app.capture-share.CaptureShareScreen` | `src/app/capture-share.tsx` | Handler de share intent del SO |
+| `CoreOS.src.components.app-tabs.AppTabs` | `src/components/app-tabs.tsx` | NativeTabs bar (3 entradas) |
+| `CoreOS.src.db.getDb` | `src/db/index.tsx` | Singleton SQLite (hotspot, fan-in alto) |
 | `CoreOS.src.db.initDb` | `src/db/index.tsx` | Init DB + migrations |
-| `CoreOS.src.db.dispatchRoutedResult` | `src/db/index.tsx:436-537` | Dispatcher LLM → INSERT |
+| `CoreOS.src.db.dispatchRoutedResult` | `src/db/index.tsx:656` | Dispatcher LLM → INSERT (firma con rawText) |
 | `CoreOS.src.db.queries.notes.getSections` | `src/db/queries/notes.ts` | Query compleja notas por sección |
 | `CoreOS.src.db.queries.notes.searchNotes` | `src/db/queries/notes.ts` | Búsqueda FTS5 |
-| `CoreOS.src.db.queries.ideas.convertIdeaToNote` | `src/db/queries/ideas.ts` | Idea → Nota |
 | `CoreOS.src.db.queries.tags.listTags` | `src/db/queries/tags.ts` | Listado tags con conteo |
-| `CoreOS.src.services.llm.processInboxText` | `src/services/llm.ts` | Llamada API LLM |
+| `CoreOS.src.db.queries.tareas.normalizeDueDate` | `src/db/queries/tareas.ts` | Parser fechas libres → YYYY-MM-DD |
+| `CoreOS.src.services.llm.processInboxText` | `src/services/llm.ts` | Llamada API LLM (inyecta fecha local) |
 | `CoreOS.src.services.inbox.processInboxItem` | `src/services/inbox.ts` | Pipeline un ítem |
 | `CoreOS.src.services.inbox.processPendingInbox` | `src/services/inbox.ts` | Batch con mutex módulo |
 | `CoreOS.src.stores.notes.useNotesStore` | `src/stores/notes.ts` | Store Zustand notas |
-| `CoreOS.src.stores.ideas.useIdeasStore` | `src/stores/ideas.ts` | Store Zustand ideas |
 | `CoreOS.src.stores.tags.useTagsStore` | `src/stores/tags.ts` | Store Zustand tags |
 | `CoreOS.src.stores.ui.useUiStore` | `src/stores/ui.ts` | Store UI |
-| `CoreOS.src.hooks.use-theme.useTheme` | `src/hooks/use-theme.ts` | Tema (hotspot, fan-in 31) |
+| `CoreOS.src.stores.tareas.useTareasStore` | `src/stores/tareas.ts` | Store Zustand tareas |
+| `CoreOS.src.hooks.use-theme.useTheme` | `src/hooks/use-theme.ts` | Tema |
+| `CoreOS.src.hooks.useNoteEditor` | `src/hooks/use-note-editor.ts` | Lógica común del editor |
 | `CoreOS.src.constants.theme.Colors` | `src/constants/theme.ts` | Tokens tema |
 | `CoreOS.src.lib.animations.animations` | `src/lib/animations.ts` | Presets Reanimated + haptics |
+| `CoreOS.src.lib.note-save-gate` | `src/lib/note-save-gate.ts` | Guard de guardado del editor |
 
 ---
 

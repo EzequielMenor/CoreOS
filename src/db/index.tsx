@@ -629,12 +629,6 @@ export async function getTareas(): Promise<TareasRow[]> {
   return db.getAllAsync<TareasRow>('SELECT * FROM tareas ORDER BY created_at DESC');
 }
 
-export async function resetDatabase(): Promise<void> {
-  closeDb();
-  await SQLite.deleteDatabaseAsync(DB_NAME);
-  console.log('[db] database deleted, ready for fresh initDb');
-}
-
 export async function verifyDb(): Promise<boolean> {
   try {
     const db = await getDb();

@@ -8,7 +8,7 @@ import Toast from 'react-native-toast-message';
 import * as Linking from 'expo-linking';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
-import { initDb, resetDatabase, insertInbox } from '@/db';
+import { initDb, insertInbox } from '@/db';
 import { processPendingInbox } from '@/services/inbox';
 import { useNotesStore } from '@/stores/notes';
 import { useTagsStore } from '@/stores/tags';
@@ -29,6 +29,7 @@ function notifyError(label: string): (e: unknown) => void {
 
 export default function TabLayout() {
   const [dbReady, setDbReady] = useState(false);
+  const [dbInitError, setDbInitError] = useState<string | null>(null);
 
   useEffect(() => {
     initDb()
@@ -41,21 +42,12 @@ export default function TabLayout() {
         // I4: processPendingInbox nunca lanza.
         void processPendingInbox();
       })
-      .catch(async (e) => {
-        console.warn('[layout] initDb failed, attempting nuclear reset of corrupted database');
-        try {
-          await resetDatabase();
-          await initDb();
-          SplashScreen.hideAsync();
-          setDbReady(true);
-          useNotesStore.getState().fetchSections().catch(notifyError('Notes'));
-          useTagsStore.getState().fetchTags().catch(notifyError('Tags'));
-          void processPendingInbox();
-        } catch {
-          SplashScreen.hideAsync();
-          setDbReady(true);
-          notifyError('initDb')(e);
-        }
+      .catch((e) => {
+        // initDb falló: NO reset, NO re-init, NO render de la app normal.
+        // Los datos quedan intactos en disco; solo informamos en pantalla.
+        console.error('[layout] initDb failed:', e);
+        SplashScreen.hideAsync();
+        setDbInitError(e instanceof Error ? e.message : String(e));
       });
   }, []);
 
@@ -131,6 +123,22 @@ export default function TabLayout() {
     ),
   }), [themeColors]);
 
+  if (dbInitError) {
+    return (
+      <View style={[styles.errorScreen, { backgroundColor: themeColors.notes.bg.base }]}>
+        <Text style={[styles.errorTitle, { color: themeColors.notes.text.primary }]}>
+          CoreOS no pudo abrir tus datos
+        </Text>
+        <Text style={[styles.errorBody, { color: themeColors.notes.text.secondary }]}>
+          Tus datos no se han borrado.
+        </Text>
+        <Text style={[styles.errorDetail, { color: themeColors.notes.text.muted }]}>
+          {dbInitError}
+        </Text>
+      </View>
+    );
+  }
+
   if (!dbReady) return null;
 
   const secondaryHeaderOptions = {
@@ -161,6 +169,27 @@ export default function TabLayout() {
 }
 
 const styles = StyleSheet.create({
+  errorScreen: {
+    alignItems: 'center',
+    flex: 1,
+    justifyContent: 'center',
+    padding: 24,
+  },
+  errorTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  errorBody: {
+    fontSize: 15,
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  errorDetail: {
+    fontSize: 12,
+    marginTop: 16,
+    textAlign: 'center',
+  },
   customToast: {
     width: '90%',
     maxWidth: 400,

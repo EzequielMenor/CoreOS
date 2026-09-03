@@ -46,6 +46,8 @@ export default function CapturarScreen() {
       });
       // Fire-and-forget con confirmación: I4 garantiza que nunca lanza.
       // El mutex de inbox.ts asegura pasada extra si otro batch volaba.
+      // No afirmamos éxito por inbox: el batch procesa capturas de otros
+      // triggers y los conteos no son atribuibles a esta captura.
       void processPendingInbox().then((result) => {
         if (result.processed === 0 && result.failed > 0) {
           Toast.show({
@@ -53,13 +55,6 @@ export default function CapturarScreen() {
             text1: 'Sin clasificar',
             text2: 'La IA no respondió; se reintentará',
             visibilityTime: 3000,
-          });
-        } else if (result.processed > 0) {
-          Toast.show({
-            type: 'success',
-            text1: 'Clasificado',
-            text2: 'Tu captura ya está en su sitio',
-            visibilityTime: 2000,
           });
         }
       });

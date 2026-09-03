@@ -49,6 +49,16 @@ export interface NotaContent {
 export type RoutedResult = { type: 'nota'; content: NotaContent }
   | { type: Exclude<RouteType, 'nota'>; content: Record<string, unknown> };
 
+// Fecha local en YYYY-MM-DD. Evita UTC: getFullYear/getMonth/getDate ya
+// operan en la zona del dispositivo.
+function localDateISO(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 interface LLMConfig {
   baseUrl: string;
   apiKey: string;
@@ -79,6 +89,8 @@ export async function getLLMConfig(): Promise<LLMConfig> {
 
 export async function processInboxText(text: string): Promise<RoutedResult> {
   const config = await getLLMConfig();
+  const systemContent =
+    `${SYSTEM_PROMPT}\nFecha local actual: ${localDateISO()}. Interpreta fechas relativas como hoy, mañana y pasado mañana respecto a esta fecha. Para tareas devuelve due_date siempre como YYYY-MM-DD.`;
   let response: Response;
 
   try {
@@ -91,7 +103,7 @@ export async function processInboxText(text: string): Promise<RoutedResult> {
       body: JSON.stringify({
         model: config.model,
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'system', content: systemContent },
           { role: 'user', content: text },
         ],
         temperature: 0.2,
@@ -134,13 +146,11 @@ export async function processInboxText(text: string): Promise<RoutedResult> {
   try {
     parsed = JSON.parse(cleanResponse) as Record<string, unknown>;
   } catch {
-    // JSON inválido → nota sin metadata; el cuerpo sale de inbox.raw_text.
-    return { type: 'nota', content: {} };
+    throw new Error('LLM: JSON inválido del modelo');
   }
 
   // Normalización defensiva del type: el modelo a veces responde mayúsculas,
-  // espacios o la clave "tipo". Sin type válido no se lanza — una captura
-  // nunca puede quedarse colgada por un capricho de formato del modelo.
+  // espacios o la clave "tipo". Sin type válido la fila queda pendiente.
   const rawType =
     typeof parsed.type === 'string'
       ? parsed.type
@@ -150,8 +160,7 @@ export async function processInboxText(text: string): Promise<RoutedResult> {
   const type = rawType.trim().toLowerCase();
 
   if (!['nota', 'gasto', 'tarea', 'habito', 'sueno'].includes(type)) {
-    console.warn(`[llm] type inválido "${rawType}" → fallback a nota`);
-    return { type: 'nota', content: {} };
+    throw new Error(`LLM: type inválido "${rawType}"`);
   }
 
   if (type === 'nota') {
@@ -171,10 +180,32 @@ export async function processInboxText(text: string): Promise<RoutedResult> {
   }
 
   if (!parsed.content || typeof parsed.content !== 'object') {
-    // Tipo válido pero content ausente/inválido → nota: el raw_text se salva igual.
-    console.warn(`[llm] type "${type}" sin content válido → fallback a nota`);
-    return { type: 'nota', content: {} };
+    throw new Error(`LLM: type "${type}" sin content válido`);
   }
 
-  return { type: type as RouteType, content: parsed.content as Record<string, unknown> } as RoutedResult;
+  const content = parsed.content as Record<string, unknown>;
+  switch (type) {
+    case 'gasto':
+      if (typeof content.amount !== 'number') {
+        throw new Error('LLM: gasto sin amount numérico');
+      }
+      break;
+    case 'tarea':
+      if (typeof content.title !== 'string' || content.title.trim().length === 0) {
+        throw new Error('LLM: tarea sin title válido');
+      }
+      break;
+    case 'habito':
+      if (typeof content.habit_name !== 'string' || content.habit_name.trim().length === 0) {
+        throw new Error('LLM: habito sin habit_name válido');
+      }
+      break;
+    case 'sueno':
+      if (typeof content.hours !== 'number') {
+        throw new Error('LLM: sueno sin hours numérico');
+      }
+      break;
+  }
+
+  return { type: type as RouteType, content } as RoutedResult;
 }
