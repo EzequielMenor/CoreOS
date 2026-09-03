@@ -3,6 +3,7 @@ import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-n
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { SymbolView } from 'expo-symbols';
+import Toast from 'react-native-toast-message';
 
 import { BottomTabInset, IconSize, MaxContentWidth, NoteSpacing, Radii } from '@/constants/theme';
 import { countPendingInbox } from '@/db';
@@ -10,6 +11,7 @@ import { getTareasHoy } from '@/db/queries/tareas';
 import type { TareaRow } from '@/db/queries/tareas';
 import { useTheme } from '@/hooks/use-theme';
 import { haptic } from '@/lib/animations';
+import { processPendingInbox } from '@/services/inbox';
 import { useTareasStore } from '@/stores/tareas';
 
 import { Cabecera } from '@/components/briefing/Cabecera';
@@ -44,6 +46,7 @@ export default function HomeScreen() {
   const [now, setNow] = useState<number>(() => Date.now());
   const [tareasHoy, setTareasHoy] = useState<TareaRow[]>([]);
   const [pendingCount, setPendingCount] = useState(0);
+  const [processing, setProcessing] = useState(false);
 
   const greeting = useMemo(() => getGreeting(new Date(now)), [now]);
   const dateLabel = useMemo(() => formatLongDate(new Date(now)), [now]);
@@ -78,6 +81,32 @@ export default function HomeScreen() {
     },
     [reload],
   );
+
+  // Chip accionable: reintenta el pipeline LLM y reporta el resultado.
+  // I4: processPendingInbox nunca lanza.
+  const handleProcessPending = useCallback(async () => {
+    if (processing) return;
+    setProcessing(true);
+    void haptic.tap.light();
+    const result = await processPendingInbox();
+    await reload();
+    setProcessing(false);
+    if (result.processed > 0) {
+      Toast.show({
+        type: 'success',
+        text1:
+          result.processed === 1
+            ? '1 captura clasificada'
+            : `${result.processed} capturas clasificadas`,
+      });
+    } else if (result.failed > 0) {
+      Toast.show({
+        type: 'error',
+        text1: 'No se pudieron procesar',
+        text2: result.errors[0]?.error,
+      });
+    }
+  }, [processing, reload]);
 
   return (
     <SafeAreaView
@@ -121,20 +150,30 @@ export default function HomeScreen() {
         </View>
 
         {pendingCount > 0 ? (
-          <View
-            style={[
+          <Pressable
+            accessibilityHint="Reintenta clasificar las capturas pendientes"
+            accessibilityLabel={`${pendingCount} capturas por procesar`}
+            accessibilityRole="button"
+            hitSlop={8}
+            onPress={() => {
+              void handleProcessPending();
+            }}
+            style={({ pressed }) => [
               styles.pendingChip,
               {
                 backgroundColor: theme.notes.accent.primaryDim,
+                opacity: pressed || processing ? 0.6 : 1,
               },
             ]}
           >
             <Text style={[styles.pendingText, { color: theme.notes.text.primary }]}>
-              {pendingCount === 1
-                ? '1 captura por procesar'
-                : `${pendingCount} capturas por procesar`}
+              {processing
+                ? 'Procesando…'
+                : pendingCount === 1
+                  ? '1 captura por procesar'
+                  : `${pendingCount} capturas por procesar`}
             </Text>
-          </View>
+          </Pressable>
         ) : null}
 
         <TareasPrioritarias

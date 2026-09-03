@@ -6,7 +6,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { haptic } from '@/lib/animations';
 import { EditorialTaskItem } from '@/components/EditorialTaskItem';
 import { useTareasStore } from '@/stores/tareas';
-import type { TareaRow } from '@/db/queries/tareas';
+import { normalizeDueDate, type TareaRow } from '@/db/queries/tareas';
 
 export interface TareasPrioritariasProps {
   tareas?: TareaRow[];
@@ -15,7 +15,11 @@ export interface TareasPrioritariasProps {
   onToggleItem?: (id: number) => void;
 }
 
-const PRIORITY_RANK: Record<string, number> = { alta: 0, media: 1, baja: 2 };
+const PRIORITY_RANK: Record<string, number> = {
+  alta: 0, high: 0,
+  media: 1, medium: 1,
+  baja: 2, low: 2,
+};
 
 function todayISO(d: Date = new Date()): string {
   const yyyy = d.getFullYear();
@@ -29,6 +33,7 @@ function todayISO(d: Date = new Date()): string {
 // Orden: vencidas primero, prioridad desc, fallback due_date asc.
 function selectTareasDeHoy(all: TareaRow[], hoy: string): TareaRow[] {
   return all
+    .map((t) => ({ ...t, due_date: normalizeDueDate(t.due_date, hoy) }))
     .filter((t) => {
       if (t.status === 'completed') return false;
       return t.due_date !== null && t.due_date <= hoy;

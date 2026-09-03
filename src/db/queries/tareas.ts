@@ -105,15 +105,54 @@ export async function countPendingTareas(): Promise<number> {
 // V1 "Hoy": pending con fecha <= hoy (vencidas incluidas). Las tareas sin
 // fecha y las futuras NO aparecen aquí (viven en la ruta secundaria /tareas).
 // Orden: vencidas primero, luego prioridad (alta > media > baja), luego fecha.
+
+// due_date es texto libre (UI free-input + LLM): ISO con hora, "hoy", d/m/y…
+// Se normaliza a YYYY-MM-DD antes de comparar. null si no hay fecha válida.
+export function normalizeDueDate(raw: string | null, hoy: string): string | null {
+  if (!raw) return null;
+  const s = raw.trim().toLowerCase();
+  if (s === 'hoy' || s === 'today') return hoy;
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const dmy = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})/);
+  if (dmy) {
+    return `${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`;
+  }
+  const d = new Date(raw);
+  if (!Number.isNaN(d.getTime())) {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+  return null;
+}
+
+// ponytail: rank de prioridad tolera el enum inglés legacy del LLM (low/medium/high).
+function priorityRank(p: string | null): number {
+  if (p === 'alta' || p === 'high') return 0;
+  if (p === 'media' || p === 'medium') return 1;
+  if (p === 'baja' || p === 'low') return 2;
+  return 3;
+}
+
 export async function getTareasHoy(hoyISO: string): Promise<TareaRow[]> {
   const db = await getDb();
-  return db.getAllAsync<TareaRow>(
-    `SELECT * FROM tareas
-     WHERE status = 'pending' AND due_date IS NOT NULL AND due_date <= ?
-     ORDER BY (due_date < ?) DESC,
-       CASE priority WHEN 'alta' THEN 0 WHEN 'media' THEN 1 WHEN 'baja' THEN 2 ELSE 3 END,
-       due_date ASC`,
-    hoyISO,
-    hoyISO,
+  const rows = await db.getAllAsync<TareaRow>(
+    "SELECT * FROM tareas WHERE status = 'pending' AND due_date IS NOT NULL",
   );
+  // ponytail: filtro/sort en JS — listado pequeño (single-user) y due_date
+  // necesita normalización antes de comparar.
+  return rows
+    .map((t) => ({ ...t, due_date: normalizeDueDate(t.due_date, hoyISO) }))
+    .filter((t) => t.due_date !== null && t.due_date <= hoyISO)
+    .sort((a, b) => {
+      const aOverdue = (a.due_date ?? '') < hoyISO ? 0 : 1;
+      const bOverdue = (b.due_date ?? '') < hoyISO ? 0 : 1;
+      if (aOverdue !== bOverdue) return aOverdue - bOverdue;
+      const pa = priorityRank(a.priority);
+      const pb = priorityRank(b.priority);
+      if (pa !== pb) return pa - pb;
+      return (a.due_date ?? '').localeCompare(b.due_date ?? '');
+    });
 }

@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import {
+  InputAccessoryView,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -9,7 +11,6 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Stack } from 'expo-router';
 import Toast from 'react-native-toast-message';
 
 import { NoteSpacing, Radii, Typography } from '@/constants/theme';
@@ -17,6 +18,8 @@ import { insertInbox } from '@/db';
 import { useTheme } from '@/hooks/use-theme';
 import { haptic } from '@/lib/animations';
 import { processPendingInbox } from '@/services/inbox';
+
+const KEYBOARD_BAR_NATIVE_ID = 'capture-keyboard-bar';
 
 export default function CapturarScreen() {
   const theme = useTheme();
@@ -41,9 +44,25 @@ export default function CapturarScreen() {
         text2: 'Clasificando con IA…',
         visibilityTime: 2500,
       });
-      // Fire-and-forget: si falla, la fila queda pending y se reintenta
-      // en el próximo trigger (I4: nunca lanza).
-      void processPendingInbox();
+      // Fire-and-forget con confirmación: I4 garantiza que nunca lanza.
+      // El mutex de inbox.ts asegura pasada extra si otro batch volaba.
+      void processPendingInbox().then((result) => {
+        if (result.processed === 0 && result.failed > 0) {
+          Toast.show({
+            type: 'error',
+            text1: 'Sin clasificar',
+            text2: 'La IA no respondió; se reintentará',
+            visibilityTime: 3000,
+          });
+        } else if (result.processed > 0) {
+          Toast.show({
+            type: 'success',
+            text1: 'Clasificado',
+            text2: 'Tu captura ya está en su sitio',
+            visibilityTime: 2000,
+          });
+        }
+      });
     } catch (err) {
       void haptic.notify.error();
       setError(err instanceof Error ? err.message : 'No se pudo guardar la captura');
@@ -55,23 +74,22 @@ export default function CapturarScreen() {
   return (
     <SafeAreaView
       style={[styles.container, { backgroundColor: theme.notes.bg.base }]}
-      edges={['bottom']}
+      edges={['top', 'bottom']}
     >
-      <Stack.Screen
-        options={{
-          title: 'Capturar',
-          headerTitleAlign: 'center',
-        }}
-      />
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.flex}
       >
         <View style={styles.content}>
-          <Text style={[styles.hint, { color: theme.notes.text.secondary }]}>
-            Escribe lo que quieras recordar. La IA lo clasificará en nota,
-            tarea, gasto, hábito o sueño.
-          </Text>
+          <View style={styles.header}>
+            <Text style={[styles.title, { color: theme.notes.text.primary }]}>
+              Capturar
+            </Text>
+            <Text style={[styles.hint, { color: theme.notes.text.secondary }]}>
+              Escribe lo que quieras recordar. La IA lo clasificará en nota,
+              tarea, gasto, hábito o sueño.
+            </Text>
+          </View>
 
           <TextInput
             style={[
@@ -84,6 +102,7 @@ export default function CapturarScreen() {
             ]}
             multiline
             autoFocus
+            inputAccessoryViewID={Platform.OS === 'ios' ? KEYBOARD_BAR_NATIVE_ID : undefined}
             placeholder="¿Qué tienes en mente?"
             placeholderTextColor={theme.notes.text.muted}
             selectionColor={theme.notes.accent.primary}
@@ -119,6 +138,35 @@ export default function CapturarScreen() {
           </Pressable>
         </View>
       </KeyboardAvoidingView>
+
+      {/* Barra sobre el teclado: única vía para cerrarlo y volver a la tab bar */}
+      {Platform.OS === 'ios' ? (
+        <InputAccessoryView nativeID={KEYBOARD_BAR_NATIVE_ID}>
+          <View
+            style={[
+              styles.keyboardBar,
+              {
+                backgroundColor: theme.notes.bg.elevated,
+                borderTopColor: theme.notes.border.subtle,
+              },
+            ]}>
+            <Pressable
+              accessibilityLabel="Cerrar teclado"
+              accessibilityRole="button"
+              hitSlop={8}
+              onPress={Keyboard.dismiss}
+              style={({ pressed }) => [
+                styles.keyboardBarDone,
+                { backgroundColor: theme.notes.accent.primaryDim },
+                pressed ? styles.keyboardBarDonePressed : null,
+              ]}>
+              <Text style={[styles.keyboardBarDoneText, { color: theme.notes.accent.primary }]}>
+                Listo
+              </Text>
+            </Pressable>
+          </View>
+        </InputAccessoryView>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -131,22 +179,25 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   content: {
-    flex: 1,
-    gap: NoteSpacing.md,
+    gap: NoteSpacing.lg,
     paddingHorizontal: NoteSpacing.lg,
-    paddingTop: NoteSpacing.lg,
+    paddingTop: NoteSpacing.xl,
+  },
+  header: {
+    gap: NoteSpacing.sm,
+  },
+  title: {
+    ...Typography.title,
   },
   hint: {
-    fontSize: 14,
-    lineHeight: 20,
+    ...Typography.body,
   },
   input: {
     borderWidth: 1,
     borderRadius: Radii.lg,
-    flex: 1,
     fontSize: 17,
+    height: 140,
     lineHeight: 24,
-    minHeight: 200,
     padding: NoteSpacing.md,
   },
   errorText: {
@@ -162,5 +213,27 @@ const styles = StyleSheet.create({
   saveText: {
     fontSize: Typography.subtitle.size,
     fontWeight: Typography.subtitle.weight,
+  },
+  keyboardBar: {
+    alignItems: 'center',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    paddingHorizontal: NoteSpacing.md,
+    paddingVertical: NoteSpacing.sm,
+  },
+  keyboardBarDone: {
+    alignItems: 'center',
+    borderRadius: Radii.pill,
+    justifyContent: 'center',
+    paddingHorizontal: NoteSpacing.lg,
+    paddingVertical: 8,
+  },
+  keyboardBarDonePressed: {
+    opacity: 0.6,
+  },
+  keyboardBarDoneText: {
+    fontSize: 15,
+    fontWeight: '600',
   },
 });

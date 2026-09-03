@@ -7,7 +7,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import Toast from 'react-native-toast-message';
 import { SymbolView } from 'expo-symbols';
@@ -29,6 +29,7 @@ const SEARCH_DEBOUNCE_MS = 300;
 export default function NotesListScreen() {
   const router = useRouter();
   const theme = useTheme();
+  const insets = useSafeAreaInsets();
   const sections = useNotesStore((state) => state.sections);
   const searchResults = useNotesStore((state) => state.searchResults);
   const loading = useNotesStore((state) => state.loading);
@@ -238,7 +239,7 @@ export default function NotesListScreen() {
           styles.fab,
           {
             backgroundColor: theme.notes.accent.primary,
-            bottom: NoteSpacing.xl,
+            bottom: insets.bottom + NoteSpacing.lg,
             opacity: pressed ? 0.85 : 1,
           },
         ]}

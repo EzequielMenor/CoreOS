@@ -22,7 +22,7 @@ Tipos:
    content: { "amount": number, "description": string, "category": string, "date": string (ISO 8601 o "today") }
 
 3. "tarea" — acción pendiente.
-   content: { "title": string, "due_date": string | null, "priority": "low" | "medium" | "high" }
+   content: { "title": string, "due_date": string (YYYY-MM-DD, ej. "2026-09-03") | null, "priority": "alta" | "media" | "baja" | null }
 
 4. "habito" — rutinas y acciones repetitivas.
    content: { "habit_name": string, "status": "done" | "missed", "date": string }
@@ -32,6 +32,8 @@ Tipos:
 
 Reglas:
 - Responde SOLO con JSON válido. Sin markdown, sin \`\`\`json, sin explicaciones antes ni después.
+- Formato obligatorio en la raíz: {"type": "<nota|gasto|tarea|habito|sueno>", "content": <objeto del tipo>}. "type" siempre en minúsculas.
+- Ejemplo: {"type": "gasto", "content": {"amount": 4.5, "description": "Café", "category": "comida", "date": "today"}}
 - Si dudas entre tipos, elige "nota".
 IMPORTANTE: NO incluyas etiquetas , notas de razonamiento, ni texto introductorio. Responde ÚNICAMENTE con un JSON puro que siga estrictamente el esquema definido. Si no puedes cumplirlo, devuelve un objeto JSON con error: "failed".`;
 
@@ -136,9 +138,20 @@ export async function processInboxText(text: string): Promise<RoutedResult> {
     return { type: 'nota', content: {} };
   }
 
-  const type = parsed.type as string;
+  // Normalización defensiva del type: el modelo a veces responde mayúsculas,
+  // espacios o la clave "tipo". Sin type válido no se lanza — una captura
+  // nunca puede quedarse colgada por un capricho de formato del modelo.
+  const rawType =
+    typeof parsed.type === 'string'
+      ? parsed.type
+      : typeof parsed.tipo === 'string'
+        ? parsed.tipo
+        : '';
+  const type = rawType.trim().toLowerCase();
+
   if (!['nota', 'gasto', 'tarea', 'habito', 'sueno'].includes(type)) {
-    throw new Error(`LLM response: type inválido "${type}"`);
+    console.warn(`[llm] type inválido "${rawType}" → fallback a nota`);
+    return { type: 'nota', content: {} };
   }
 
   if (type === 'nota') {
@@ -158,7 +171,9 @@ export async function processInboxText(text: string): Promise<RoutedResult> {
   }
 
   if (!parsed.content || typeof parsed.content !== 'object') {
-    throw new Error('LLM response: falta content o no es un objeto');
+    // Tipo válido pero content ausente/inválido → nota: el raw_text se salva igual.
+    console.warn(`[llm] type "${type}" sin content válido → fallback a nota`);
+    return { type: 'nota', content: {} };
   }
 
   return { type: type as RouteType, content: parsed.content as Record<string, unknown> } as RoutedResult;

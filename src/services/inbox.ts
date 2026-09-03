@@ -98,14 +98,27 @@ export async function processInboxItem(id: number): Promise<ProcessResult> {
 
 // D13: mutex a nivel de módulo — evita batches concurrentes (callers reciben la misma promesa)
 let _batchInFlight: Promise<BatchResult> | null = null;
+// Si un caller llega con el batch en vuelo, su insert es posterior a la lista
+// que el batch ya leyó: se marca retry y el owner da otra pasada al terminar.
+let _retryRequested = false;
 
 export async function processPendingInbox(): Promise<BatchResult> {
-  // Si ya hay un batch en vuelo, reusar su promesa (idempotencia gratis)
-  if (_batchInFlight) return await _batchInFlight;
+  // Si ya hay un batch en vuelo, unirse y pedir pasada extra para el trabajo nuevo
+  if (_batchInFlight) {
+    _retryRequested = true;
+    return await _batchInFlight;
+  }
 
   _batchInFlight = doProcess();
   try {
-    return await _batchInFlight;
+    let result = await _batchInFlight;
+    // Capturas nuevas mientras volábamos: pasar hasta drenar
+    while (_retryRequested) {
+      _retryRequested = false;
+      _batchInFlight = doProcess();
+      result = await _batchInFlight;
+    }
+    return result;
   } finally {
     _batchInFlight = null;
   }
