@@ -216,6 +216,11 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
     // 6. Triggers nuevos (mantienen consistencia notes ↔ notes_fts ↔ tags_names).
     //    Los triggers referencian body_md y pasan el COALESCE exacto de tags_names en la claúsula 'delete'
     //    para evitar corrupción de FTS5 / SQL logic error en UPDATE.
+    //    ponytail: note_tags PK es (note_id, tag_id), no tiene columna id.
+    //    Para excluir la fila recién insertada del aggregate 'delete' usamos
+    //    tag_id (la PK compuesta garantiza unicidad por par). El bug previo
+    //    referenciaba nt.id y new.id, que no existen en note_tags, reventando
+    //    UPDATE con "SQL logic error" en finalizeAsync.
     await db.execAsync(`
       DROP TRIGGER IF EXISTS notes_ai;
       DROP TRIGGER IF EXISTS notes_ad;
@@ -252,11 +257,6 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
             WHERE nt.note_id=new.id), ''));
       END;
 
-      // ponytail: note_tags PK es (note_id, tag_id), no tiene columna id.
-      // Para excluir la fila recién insertada del aggregate 'delete' usamos
-      // tag_id (la PK compuesta garantiza unicidad por par). El bug previo
-      // referenciaba nt.id y new.id, que no existen en note_tags, reventando
-      // UPDATE con "SQL logic error" en finalizeAsync.
       CREATE TRIGGER note_tags_ai AFTER INSERT ON note_tags BEGIN
         UPDATE notes SET updated_at = (unixepoch()) WHERE id = new.note_id;
         INSERT INTO notes_fts(notes_fts, rowid, title, body_md, tags_names)
