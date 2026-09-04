@@ -14,6 +14,8 @@ device and organized automatically by an AI classifier.
 
 [repository](https://github.com/EzequielMenor/CoreOS) · [ezequielmenor.es](https://ezequielmenor.es)
 
+**English** · [Español](README.es.md)
+
 </div>
 
 ---
@@ -38,8 +40,6 @@ never rewritten, and organization happens *after* capture, never before.
 | --- | --- | --- |
 | ![Today](assets/screenshots/Today.png) | ![Capture](assets/screenshots/Capture.png) | ![Biblioteca](assets/screenshots/Biblioteca.png) |
 | Today's tasks and pending captures at a glance. | One field. Anything you want to remember. | Notes grouped by recency, with full-text search. |
-
-Drop the three PNGs into `assets/screenshots/` (named `Today.png`, `Capture.png`, `Biblioteca.png`) and uncomment each image.
 
 ## How it works
 
@@ -133,8 +133,11 @@ src/constants/   theme tokens
 ### Classification types
 
 The LLM emits one of five types: `nota`, `gasto`, `tarea`, `habito`, `sueno`.
-Schema for each is enforced server-side in `processInboxText`; any deviation
-marks the capture as `failed` for retry without losing `raw_text`.
+Schema for each is enforced client-side in `processInboxText`; if the response
+is missing required fields or returns an unknown type, the pipeline logs a
+warning and leaves the row in `pending` so the next batch re-picks it. The
+`raw_text` is never lost — the row only flips to `processed` once a valid
+dispatch succeeds inside the same transaction.
 
 ### Native tabs
 
