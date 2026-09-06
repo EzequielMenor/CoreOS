@@ -1,12 +1,8 @@
-import * as SecureStore from 'expo-secure-store';
-import { Platform } from 'react-native';
+import {
+  getActiveLLMConfig,
+} from './llm-providers';
 
-const KEY_BASE_URL = 'llm.baseUrl';
-const KEY_API_KEY = 'llm.apiKey';
-const KEY_MODEL = 'llm.model';
-
-const DEFAULT_BASE_URL = 'https://api.minimax.io/v1';
-const DEFAULT_MODEL = 'MiniMax-Text-01';
+export * from './llm-providers';
 
 const SYSTEM_PROMPT = `Eres un router de inbox. Clasifica el texto del usuario en uno de estos tipos y devuelve SOLO JSON válido.
 
@@ -59,36 +55,23 @@ function localDateISO(): string {
   return `${y}-${m}-${day}`;
 }
 
-interface LLMConfig {
+export interface LLMConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
 }
 
 export async function getLLMConfig(): Promise<LLMConfig> {
-  if (Platform.OS === 'web') {
-    throw new Error('SecureStore no está disponible en web. Configura el proveedor de IA desde un dispositivo nativo.');
-  }
-
-  const [baseUrl, apiKey, model] = await Promise.all([
-    SecureStore.getItemAsync(KEY_BASE_URL),
-    SecureStore.getItemAsync(KEY_API_KEY),
-    SecureStore.getItemAsync(KEY_MODEL),
-  ]);
-
-  if (!apiKey) {
-    throw new Error('API Key no configurada. Ve a Ajustes y configura tu API Key de MiniMax.');
-  }
-
+  const active = await getActiveLLMConfig();
   return {
-    baseUrl: baseUrl ?? DEFAULT_BASE_URL,
-    apiKey,
-    model: model ?? DEFAULT_MODEL,
+    baseUrl: active.baseUrl,
+    apiKey: active.apiKey,
+    model: active.model,
   };
 }
 
 export async function processInboxText(text: string): Promise<RoutedResult> {
-  const config = await getLLMConfig();
+  const config = await getActiveLLMConfig();
   const systemContent =
     `${SYSTEM_PROMPT}\nFecha local actual: ${localDateISO()}. Interpreta fechas relativas como hoy, mañana y pasado mañana respecto a esta fecha. Para tareas devuelve due_date siempre como YYYY-MM-DD.`;
   let response: Response;
@@ -96,10 +79,7 @@ export async function processInboxText(text: string): Promise<RoutedResult> {
   try {
     response = await fetch(`${config.baseUrl}/chat/completions`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${config.apiKey}`,
-      },
+      headers: config.headers,
       body: JSON.stringify({
         model: config.model,
         messages: [
