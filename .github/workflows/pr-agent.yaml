@@ -29,12 +29,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+          # Qwen Cloud — OpenAI-compatible
           OPENAI__KEY: ${{ secrets.QWEN_API_KEY }}
           OPENAI__API_BASE: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
 
           config.model: "openai/qwen3.8-flash"
           config.fallback_models: '["openai/qwen3.8-flash"]'
 
+          # Nueva PR
           github_action_config.auto_review: "true"
           github_action_config.auto_describe: "true"
           github_action_config.auto_improve: "false"
+
+          # Nuevos commits en una PR existente
+          github_action_config.handle_push_trigger: "true"
+          github_action_config.push_commands: '["/describe", "/review"]'
