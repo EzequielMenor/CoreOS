@@ -8,7 +8,8 @@ import Toast from 'react-native-toast-message';
 import * as Linking from 'expo-linking';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
-import { initDb, insertInbox } from '@/db';
+import { initDb } from '@/db';
+import { captureInbox } from '@/services/capture';
 import { processPendingInbox } from '@/services/inbox';
 import { useNotesStore } from '@/stores/notes';
 import { useTagsStore } from '@/stores/tags';
@@ -62,10 +63,9 @@ export default function TabLayout() {
     if (parsed.path === 'capture' || parsed.hostname === 'capture') {
       const text = parsed.queryParams?.text;
       if (typeof text === 'string' && text.trim().length > 0) {
-        insertInbox(text.trim())
+        captureInbox(text.trim())
           .then(() => {
             Toast.show({ type: 'success', text1: 'Captura recibida' });
-            void processPendingInbox();
           })
           .catch(notifyError('Inbox DeepLink'));
       }

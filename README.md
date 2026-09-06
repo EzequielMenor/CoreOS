@@ -159,6 +159,7 @@ required (and Expo Go is not enough).
 | Secrets | `expo-secure-store` |
 | Animation | `react-native-reanimated` 4 + worklets |
 | AI | Any OpenAI-compatible chat completions endpoint |
+| Testing | Jest 29 + `jest-expo` |
 
 ## Status
 
@@ -167,7 +168,8 @@ required (and Expo Go is not enough).
 Not a commercial product. Some tables in the pipeline (`gastos`,
 `habitos_log`, `sueno_log`) are already written by the classifier, but their
 management UI is intentionally not part of V1 — the data is captured and
-stored; the screens come later. There is no automated test suite yet.
+stored; the screens come later. A fast automated suite protects the critical
+inbox pipeline and task date normalization.
 
 ## Running locally
 
@@ -188,6 +190,7 @@ and stay `pending` until one is configured and the pipeline is retried.
 ```bash
 npm run lint      # ESLint via expo lint
 npx tsc --noEmit  # typecheck
+npm test          # critical pipeline tests
 ```
 
 `expo-secure-store` is unavailable on web — the AI pipeline does not work in a

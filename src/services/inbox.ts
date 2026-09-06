@@ -13,7 +13,7 @@
  */
 
 import type { InboxRow } from '@/db';
-import { getDb, getPendingInbox, dispatchRoutedResult } from '@/db';
+import { dispatchRoutedResult, getDb, getPendingInbox } from '@/db';
 import { processInboxText, type RouteType } from './llm';
 
 export type ProcessResult =

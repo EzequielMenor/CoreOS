@@ -77,7 +77,7 @@ src/stores/      CORE      — Zustand: notes, tags, ui, tareas (gastos/sueno hu
 src/components/  INTERNO   — UI compartidos + briefing (Cabecera, TareasPrioritarias)
 src/db/          CORE      — singleton SQLite (hotspot, fan-in alto)
 src/db/queries/  CORE      — notes, tags, tareas activas (gastos/habitos/sueno sin UI)
-src/services/    ENTRY     — cliente LLM, orquestación inbox
+src/services/    ENTRY     — captura segura, cliente LLM, orquestación inbox
 src/hooks/       CORE      — useTheme, useColorScheme, useNoteEditor
 src/lib/         CORE      — animations (Reanimated + haptics), note-save-gate
 src/constants/   CORE      — tokens de tema (read-only)
@@ -192,6 +192,8 @@ CoreOS/
 
 ### Servicios
 
+- **`src/services/capture.ts`** — `captureInbox()`. Persiste en inbox antes de
+  iniciar la clasificación y devuelve la promesa del batch.
 - **`src/services/llm.ts`** — `processInboxText()`. Llama a la API MiniMax
   (compatible OpenAI). Devuelve `{ type: RouteType, content }`.
   Base URL por defecto: `https://api.minimax.io/v1`.
@@ -275,15 +277,16 @@ decisiones arquitectónicas viven ahí o en comentarios `// ponytail:`
 
 ## 7. Testing
 
-**Estado: SIN INFRAESTRUCTURA.** No hay `jest`, `vitest` ni `detox`
-configurados. `package.json` no tiene script `test`. El `README.md`
-apunta a la guía oficial de Jest como *opt-in*.
+**Estado: SUITE MÍNIMA.** Jest 29 + `jest-expo` cubren el pipeline crítico
+de inbox y la normalización de fechas de tareas. No hay tests de UI ni E2E.
 
 Implicaciones para el agente:
 
-- **No hay regresión automática.** Cualquier cambio queda sin verificar.
-- **Si añades cobertura**, usa el preset oficial
-  [`jest-preset-expo`](https://docs.expo.dev/versions/v57.0.0/) (Expo 57).
+- Ejecuta `npm test` tras tocar `src/services/inbox.ts`, `src/services/llm.ts`,
+  `src/db/index.tsx` o `src/db/queries/tareas.ts`.
+- Mantén `jest-expo@57.0.1` fijado mientras React Native siga en `0.86.0`;
+  releases posteriores de `jest-expo` requieren `@react-native/jest-preset`
+  `0.86.3`.
 - **Cuidado con el pipeline inbox en tests**: `processPendingInbox()` tiene
   un mutex a nivel de módulo (`_batchInFlight`) que bloquea llamadas
   concurrentes. Cualquier test que dispare batches debe esperar/resetear
@@ -305,13 +308,15 @@ Desde `package.json`:
 | `npm run ios` · `npx expo run:ios` | Build + run en simulador iOS |
 | `npm run android` · `npx expo run:android` | Build + run en emulador Android |
 | `npm run lint` | ESLint vía `expo lint` |
+| `npm test` | Suite Jest rápida, una pasada (`--runInBand`) |
+| `npm run test:watch` | Suite Jest en modo watch |
 | `npx expo prebuild` | Regenera `ios/` y `android/` |
 | `npm run reset-project` | Vuelve al scaffold Expo en blanco |
 
 **Typecheck** (sin script oficial):
 `npx tsc --noEmit`
 
-**Sin scripts** de `test`, `build` ni `typecheck` definidos.
+**Sin scripts** de `build` ni `typecheck` definidos.
 Output web es `static` (`app.json`).
 
 ---
@@ -322,7 +327,7 @@ Output web es `static` (`app.json`).
 |---------|-----------|-----------|
 | **Inbox** | Cola de captura cruda. Texto libre → tabla `inbox` → LLM → dispatch. | `src/db/index.tsx`, `src/services/inbox.ts` |
 | **Hoy** | Tab raíz: tareas del día + chip de capturas por clasificar. | `src/app/(tabs)/index.tsx` + `src/components/briefing/` |
-| **Capturar** | Tab de captura rápida: textarea única → `insertInbox()` → batch. | `src/app/(tabs)/capturar.tsx` |
+| **Capturar** | Tab de captura rápida: textarea única → `captureInbox()` → batch. | `src/services/capture.ts`, `src/app/(tabs)/capturar.tsx` |
 | **Biblioteca** | Tab de notas: CRUD + búsqueda FTS5 + filtros tags. | `src/app/(tabs)/notas/`, `src/stores/notes.ts` |
 | **capture-share** | Ruta oculta para share intents del SO (`src/app/capture-share.tsx`). | `src/app/capture-share.tsx` |
 | **Notas** | Artefacto principal: título + `body_md` + tags. Buscable por FTS5. | `src/db/queries/notes.ts`, `src/stores/notes.ts`, `src/app/(tabs)/notas/` |
@@ -398,7 +403,6 @@ EncryptedSharedPreferences Android). Keys registrados:
 | **No añadir backend / auth / Supabase / multi-user** | Decisión de diseño local-first |
 | **No crear carpeta `features/`** | Lógica de dominio en `stores/` + `db/queries/` |
 | **No usar `withTransactionAsync` dentro de `dispatchRoutedResult`** | Invariante `// I1` en `src/services/inbox.ts` |
-| **No añadir tests sin plantear primero la infraestructura** | §7 — sin jest preset configurado |
 
 ---
 
@@ -409,13 +413,13 @@ EncryptedSharedPreferences Android). Keys registrados:
 | 1 | **Drift de timestamps** | Notas v1: `unixepoch()` (s) tras migración `v3_notes_ts_seconds`. Las tablas `gastos` / `tareas` / `habitos_log` / `sueno_log` / `inbox` siguen en ms (`Date.now()`). Documentado en `src/db/queries/notes.ts:6`. |
 | 2 | **SecureStore en web** | `getLLMConfig()` lanza en `SecureStore.*` si la plataforma es web. LLM no usable desde navegador. |
 | 3 | **Pantallas básicas** | `habitos.tsx`, `sueno.tsx` son listas con CRUD limitado en UI. El CRUD real entra vía pipeline LLM. `gastos.tsx` y `tareas.tsx` SÍ tienen CRUD completo en UI. |
-| 4 | **Sin test infra** | Cualquier cambio queda sin verificar automáticamente. Si añades, usa `jest-preset-expo`. |
+| 4 | **Cobertura acotada** | Jest protege el pipeline crítico y fechas de tareas; UI, SQLite nativo y E2E siguen sin cobertura. |
 | 5 | **Mutex en `processPendingInbox`** | `_batchInFlight` global. Tests que disparen batches deben drainar el lock o usar `processInboxItem()` directo. |
 | 6 | **Tabs nativos iOS-only** | `unstable-native-tabs` solo aplica en iOS. Android/web caen a render alternativo. |
 | 7 | **`react-native-reanimated` 4 API** | `useAnimatedGestureHandler` eliminado. Usa `Gesture.Pan()` + worklets. |
 | 8 | **`react-compiler` experimental** | Hooks pueden comportarse de forma no intuitiva. Si ves algo raro, comprueba que el compilador no esté optimizando mal. |
 | 9 | **`NoteSpacing['2xl']`** | Único spacing token nuevo (48px). Notación con bracket por TS. |
-| 10 | **Sin scripts `test`/`build`/`typecheck`** | Usa `npx tsc --noEmit` directamente. No hay `npm run build`. |
+| 10 | **Sin scripts `build`/`typecheck`** | Usa `npx tsc --noEmit` directamente. No hay `npm run build`. |
 | 11 | **`react-native-web` ~0.21.0** | Versión mayor del bundler web; algunas APIs nativas no shimmean (ej. SecureStore). |
 | 12 | **Repo público: cero secrets** | El repo es público. Todo lo sensible va a `expo-secure-store`. Nunca commitear `.env`, API keys ni dumps con datos personales. |
 
@@ -500,7 +504,7 @@ Qualified names para `codebase-memory` (`codebase-memory_search_graph`,
 4. Si necesitas explorar, usa `codebase-memory_search_graph` /
    `codebase-memory_get_architecture` en vez de `grep`/`find` a ciegas.
 5. Tras tocar código: `npm run lint` y `npx tsc --noEmit`.
-6. **No corras tests** — no hay infra.
+6. Ejecuta `npm test` tras cambios en el pipeline crítico o tareas.
 7. **No commitees** salvo que te lo pidan explícitamente. El slash
    command `/commit` produce commits conventionals.
 8. **No hagas push.** El usuario decide cuándo.

@@ -10,8 +10,7 @@ import {
 
 import { ThemedText } from '@/components/themed-text';
 import { useTheme } from '@/hooks/use-theme';
-import { insertInbox } from '@/db';
-import { processPendingInbox } from '@/services/inbox';
+import { captureInbox } from '@/services/capture';
 
 // Extracción texto/URL del payload raw. El payload raw llega como
 // { value: string, mimeType: string } (string compartido). Las websites llegan
@@ -38,12 +37,10 @@ export default function CaptureShareScreen() {
           const text = extractText(p);
           if (!text || seen.has(text)) continue;
           seen.add(text);
-          await insertInbox(text); // I4: nunca lanza dispatch; solo INSERT
+          await captureInbox(text); // Persiste antes de iniciar la clasificación.
           inserted++;
         }
         await clearSharedPayloads(); // evita re-disparo al relanzar app
-        // Disparo fire-and-forget: la captura ya está a salvo en inbox.
-        if (inserted > 0) void processPendingInbox();
       } catch {
         // I1–I4: nunca propagamos error al usuario; fallback graceful.
       }

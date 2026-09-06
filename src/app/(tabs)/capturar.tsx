@@ -14,10 +14,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
 
 import { NoteSpacing, Radii, Typography } from '@/constants/theme';
-import { insertInbox } from '@/db';
 import { useTheme } from '@/hooks/use-theme';
 import { haptic } from '@/lib/animations';
-import { processPendingInbox } from '@/services/inbox';
+import { captureInbox } from '@/services/capture';
 
 const KEYBOARD_BAR_NATIVE_ID = 'capture-keyboard-bar';
 
@@ -35,7 +34,7 @@ export default function CapturarScreen() {
     setError(null);
     try {
       // Persistir antes de pensar: la captura queda a salvo en inbox primero.
-      await insertInbox(trimmed);
+      const { processing } = await captureInbox(trimmed);
       void haptic.notify.success();
       setText('');
       Toast.show({
@@ -48,7 +47,7 @@ export default function CapturarScreen() {
       // El mutex de inbox.ts asegura pasada extra si otro batch volaba.
       // No afirmamos éxito por inbox: el batch procesa capturas de otros
       // triggers y los conteos no son atribuibles a esta captura.
-      void processPendingInbox().then((result) => {
+      void processing.then((result) => {
         if (result.processed === 0 && result.failed > 0) {
           Toast.show({
             type: 'error',
