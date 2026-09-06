@@ -6,11 +6,12 @@ import { SymbolView } from 'expo-symbols';
 import Toast from 'react-native-toast-message';
 
 import { BottomTabInset, IconSize, MaxContentWidth, NoteSpacing, Radii } from '@/constants/theme';
-import { countPendingInbox } from '@/db';
+import { getPendingInboxSummary, type PendingInboxSummary } from '@/db';
 import { getTareasHoy } from '@/db/queries/tareas';
 import type { TareaRow } from '@/db/queries/tareas';
 import { useTheme } from '@/hooks/use-theme';
 import { haptic } from '@/lib/animations';
+import { getInboxErrorShortLabel } from '@/services/inbox-diagnostics';
 import { processPendingInbox } from '@/services/inbox';
 import { useTareasStore } from '@/stores/tareas';
 
@@ -45,7 +46,11 @@ export default function HomeScreen() {
 
   const [now, setNow] = useState<number>(() => Date.now());
   const [tareasHoy, setTareasHoy] = useState<TareaRow[]>([]);
-  const [pendingCount, setPendingCount] = useState(0);
+  const [pendingSummary, setPendingSummary] = useState<PendingInboxSummary>({
+    total: 0,
+    failed: 0,
+    latest_error_code: null,
+  });
   const [processing, setProcessing] = useState(false);
 
   const greeting = useMemo(() => getGreeting(new Date(now)), [now]);
@@ -56,10 +61,10 @@ export default function HomeScreen() {
     // ponytail: allSettled — un fallo de una query no oculta la otra.
     const [tareas, pending] = await Promise.allSettled([
       getTareasHoy(todayISO(new Date())),
-      countPendingInbox(),
+      getPendingInboxSummary(),
     ]);
     if (tareas.status === 'fulfilled') setTareasHoy(tareas.value);
-    if (pending.status === 'fulfilled') setPendingCount(pending.value);
+    if (pending.status === 'fulfilled') setPendingSummary(pending.value);
   }, []);
 
   useFocusEffect(
@@ -88,7 +93,7 @@ export default function HomeScreen() {
     if (processing) return;
     setProcessing(true);
     void haptic.tap.light();
-    const result = await processPendingInbox();
+    const result = await processPendingInbox({ force: true });
     await reload();
     setProcessing(false);
     if (result.processed > 0) {
@@ -107,6 +112,16 @@ export default function HomeScreen() {
       });
     }
   }, [processing, reload]);
+
+  const pendingLabel = pendingSummary.latest_error_code
+    ? `${pendingSummary.total === 1
+      ? '1 captura pendiente'
+      : pendingSummary.failed === pendingSummary.total
+        ? `${pendingSummary.total} capturas pendientes`
+        : `${pendingSummary.failed} de ${pendingSummary.total} necesitan atención`} · ${getInboxErrorShortLabel(pendingSummary.latest_error_code)}`
+    : pendingSummary.total === 1
+      ? '1 captura por procesar'
+      : `${pendingSummary.total} capturas por procesar`;
 
   return (
     <SafeAreaView
@@ -149,10 +164,10 @@ export default function HomeScreen() {
           </Pressable>
         </View>
 
-        {pendingCount > 0 ? (
+        {pendingSummary.total > 0 ? (
           <Pressable
             accessibilityHint="Reintenta clasificar las capturas pendientes"
-            accessibilityLabel={`${pendingCount} capturas por procesar`}
+            accessibilityLabel={pendingLabel}
             accessibilityRole="button"
             hitSlop={8}
             onPress={() => {
@@ -169,9 +184,7 @@ export default function HomeScreen() {
             <Text style={[styles.pendingText, { color: theme.notes.text.primary }]}>
               {processing
                 ? 'Procesando…'
-                : pendingCount === 1
-                  ? '1 captura por procesar'
-                  : `${pendingCount} capturas por procesar`}
+                : pendingLabel}
             </Text>
           </Pressable>
         ) : null}

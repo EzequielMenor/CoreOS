@@ -40,22 +40,81 @@ function llmResponse(content: string): Response {
   } as Response;
 }
 
+function httpErrorResponse(status: number): Response {
+  return {
+    json: async () => ({ error: { message: 'respuesta privada del proveedor' } }),
+    ok: false,
+    status,
+    statusText: 'Provider private detail',
+  } as Response;
+}
+
+function pendingRow(id: number, rawText: string, createdAt: number): MutableInboxRow {
+  return {
+    id,
+    raw_text: rawText,
+    created_at: createdAt,
+    status: 'pending',
+    error_code: null,
+    last_attempt_at: null,
+    attempt_count: 0,
+    next_retry_at: null,
+  };
+}
+
 function useFakeDb(rows: MutableInboxRow[]) {
   const db = {
     getFirstAsync: jest.fn(async (_query: string, id: number) => (
       rows.find((row) => row.id === id) ?? null
     )),
     runAsync: jest.fn(
-      async (_query: string, nextStatus: InboxRow['status'], id: number, expectedStatus: InboxRow['status']) => {
+      async (query: string, ...args: unknown[]) => {
+        if (query.includes('SET error_code')) {
+          const [errorCode, lastAttemptAt, nextRetryAt, id, expectedStatus] = args as [
+            InboxRow['error_code'],
+            number,
+            number | null,
+            number,
+            InboxRow['status'],
+          ];
+          const row = rows.find((candidate) => candidate.id === id);
+          if (!row || row.status !== expectedStatus) {
+            return { changes: 0, lastInsertRowId: 0 };
+          }
+          row.error_code = errorCode;
+          row.last_attempt_at = lastAttemptAt;
+          row.attempt_count++;
+          row.next_retry_at = nextRetryAt;
+          return { changes: 1, lastInsertRowId: 0 };
+        }
+
+        const [nextStatus, lastAttemptAt, id, expectedStatus] = args as [
+          InboxRow['status'],
+          number,
+          number,
+          InboxRow['status'],
+        ];
         const row = rows.find((candidate) => candidate.id === id);
         if (!row || row.status !== expectedStatus) {
           return { changes: 0, lastInsertRowId: 0 };
         }
         row.status = nextStatus;
+        row.error_code = null;
+        row.last_attempt_at = lastAttemptAt;
+        row.attempt_count++;
+        row.next_retry_at = null;
         return { changes: 1, lastInsertRowId: 0 };
       },
     ),
-    withTransactionAsync: jest.fn(async (task: () => Promise<void>) => task()),
+    withTransactionAsync: jest.fn(async (task: () => Promise<void>) => {
+      const snapshots = rows.map((row) => ({ ...row }));
+      try {
+        await task();
+      } catch (error) {
+        rows.forEach((row, index) => Object.assign(row, snapshots[index]));
+        throw error;
+      }
+    }),
   };
 
   mockGetDb.mockResolvedValue(
@@ -74,6 +133,7 @@ describe('pipeline de inbox', () => {
       key === 'llm.apiKey' ? 'test-api-key' : null
     ));
     globalThis.fetch = mockFetch as unknown as typeof fetch;
+    jest.spyOn(console, 'error').mockImplementation();
     jest.spyOn(console, 'info').mockImplementation();
     jest.spyOn(console, 'warn').mockImplementation();
   });
@@ -107,12 +167,7 @@ describe('pipeline de inbox', () => {
 
   test('despacha una respuesta LLM válida y marca la captura como procesada', async () => {
     const rawText = 'Pagar la luz mañana';
-    const row: MutableInboxRow = {
-      id: 7,
-      raw_text: rawText,
-      created_at: 1,
-      status: 'pending',
-    };
+    const row = pendingRow(7, rawText, 1);
     useFakeDb([row]);
     mockFetch.mockResolvedValue(llmResponse(JSON.stringify({
       type: 'tarea',
@@ -144,16 +199,13 @@ describe('pipeline de inbox', () => {
       rawText,
     );
     expect(row.status).toBe('processed');
+    expect(row.attempt_count).toBe(1);
+    expect(row.error_code).toBeNull();
   });
 
-  test('mantiene pending y conserva raw_text ante una respuesta LLM inválida', async () => {
+  test('bloquea el reintento automático y conserva raw_text ante una respuesta inválida', async () => {
     const rawText = 'Texto que no se puede perder';
-    const row: MutableInboxRow = {
-      id: 8,
-      raw_text: rawText,
-      created_at: 2,
-      status: 'pending',
-    };
+    const row = pendingRow(8, rawText, 2);
     const db = useFakeDb([row]);
     mockFetch.mockResolvedValue(llmResponse('respuesta sin JSON'));
 
@@ -161,23 +213,25 @@ describe('pipeline de inbox', () => {
 
     expect(result).toEqual({
       skipped: false,
-      error: 'LLM: JSON inválido del modelo',
-      retryable: true,
+      error: 'La IA devolvió una respuesta no válida. Reinténtalo manualmente.',
+      errorCode: 'invalid_response',
+      retryable: false,
       inboxId: row.id,
     });
-    expect(db.runAsync).not.toHaveBeenCalled();
+    expect(db.runAsync).toHaveBeenCalledTimes(1);
     expect(mockDispatchRoutedResult).not.toHaveBeenCalled();
-    expect(row).toMatchObject({ status: 'pending', raw_text: rawText });
+    expect(row).toMatchObject({
+      status: 'pending',
+      raw_text: rawText,
+      error_code: 'invalid_response',
+      attempt_count: 1,
+      next_retry_at: null,
+    });
   });
 
-  test('mantiene pending y conserva raw_text ante un fallo de red', async () => {
+  test('programa un reintento y conserva raw_text ante un fallo de red', async () => {
     const rawText = 'Otra captura importante';
-    const row: MutableInboxRow = {
-      id: 9,
-      raw_text: rawText,
-      created_at: 3,
-      status: 'pending',
-    };
+    const row = pendingRow(9, rawText, 3);
     const db = useFakeDb([row]);
     mockFetch.mockRejectedValue(new Error('sin conexión'));
 
@@ -185,19 +239,155 @@ describe('pipeline de inbox', () => {
 
     expect(result).toEqual({
       skipped: false,
-      error: 'LLM request failed: sin conexión',
+      error: 'Sin conexión. La captura se reintentará automáticamente.',
+      errorCode: 'network',
       retryable: true,
       inboxId: row.id,
     });
-    expect(db.runAsync).not.toHaveBeenCalled();
+    expect(db.runAsync).toHaveBeenCalledTimes(1);
     expect(mockDispatchRoutedResult).not.toHaveBeenCalled();
-    expect(row).toMatchObject({ status: 'pending', raw_text: rawText });
+    expect(row).toMatchObject({
+      status: 'pending',
+      raw_text: rawText,
+      error_code: 'network',
+      attempt_count: 1,
+    });
+    expect(row.next_retry_at).toBeGreaterThan(row.last_attempt_at ?? 0);
+  });
+
+  test('pausa los reintentos automáticos al alcanzar el máximo de intentos', async () => {
+    const row = pendingRow(15, 'Captura con red inestable', 15);
+    row.attempt_count = 4;
+    useFakeDb([row]);
+    mockFetch.mockRejectedValue(new Error('sin conexión'));
+
+    const result = await processInboxItem(row.id);
+
+    expect(result).toEqual({
+      skipped: false,
+      error: 'Los reintentos automáticos están pausados. Reinténtalo manualmente.',
+      errorCode: 'network',
+      retryable: false,
+      inboxId: row.id,
+    });
+    expect(row).toMatchObject({
+      status: 'pending',
+      raw_text: 'Captura con red inestable',
+      error_code: 'network',
+      attempt_count: 5,
+      next_retry_at: null,
+    });
+  });
+
+  test.each([
+    [401, 'authentication', false, 'La configuración de IA no es válida. Revísala en Ajustes.'],
+    [429, 'rate_limit', true, 'La IA está saturada. La captura se reintentará automáticamente.'],
+  ] as const)(
+    'clasifica HTTP %i como %s sin exponer la respuesta del proveedor',
+    async (status, errorCode, retryable, publicMessage) => {
+      const row = pendingRow(status, `captura privada ${status}`, status);
+      useFakeDb([row]);
+      mockFetch.mockResolvedValue(httpErrorResponse(status));
+
+      const result = await processInboxItem(row.id);
+
+      expect(result).toEqual({
+        skipped: false,
+        error: publicMessage,
+        errorCode,
+        retryable,
+        inboxId: row.id,
+      });
+      expect(row.error_code).toBe(errorCode);
+      expect(row.next_retry_at === null).toBe(!retryable);
+    },
+  );
+
+  test('distingue la falta de configuración sin iniciar una petición', async () => {
+    const row = pendingRow(12, 'contenido sin configurar', 12);
+    useFakeDb([row]);
+    mockGetSecureItem.mockResolvedValue(null);
+
+    const result = await processInboxItem(row.id);
+
+    expect(result).toEqual({
+      skipped: false,
+      error: 'Configura la IA en Ajustes para clasificar esta captura.',
+      errorCode: 'not_configured',
+      retryable: false,
+      inboxId: row.id,
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(row).toMatchObject({
+      status: 'pending',
+      raw_text: 'contenido sin configurar',
+      error_code: 'not_configured',
+      attempt_count: 1,
+      next_retry_at: null,
+    });
+  });
+
+  test('clasifica y persiste un fallo de dispatch sin perder la captura', async () => {
+    const rawText = 'Captura que falla al despachar';
+    const row = pendingRow(13, rawText, 13);
+    useFakeDb([row]);
+    mockFetch.mockResolvedValue(llmResponse(JSON.stringify({
+      type: 'tarea',
+      content: { title: 'Tarea', due_date: null, priority: null },
+    })));
+    mockDispatchRoutedResult.mockRejectedValue(new Error(`SQL error ${rawText}`));
+
+    const result = await processInboxItem(row.id);
+
+    expect(result).toEqual({
+      skipped: false,
+      error: 'No se pudo guardar la clasificación. Reinténtalo manualmente.',
+      errorCode: 'dispatch',
+      retryable: false,
+      inboxId: row.id,
+    });
+    expect(row).toMatchObject({
+      status: 'pending',
+      raw_text: rawText,
+      error_code: 'dispatch',
+      attempt_count: 1,
+      next_retry_at: null,
+    });
+  });
+
+  test('los logs no contienen texto capturado ni detalles privados del proveedor', async () => {
+    const rawText = 'SECRETO-CAPTURA-123';
+    const row = pendingRow(14, rawText, 14);
+    useFakeDb([row]);
+    mockFetch.mockResolvedValue(httpErrorResponse(401));
+
+    await processInboxItem(row.id);
+
+    const logs = [
+      ...jest.mocked(console.error).mock.calls,
+      ...jest.mocked(console.warn).mock.calls,
+      ...jest.mocked(console.info).mock.calls,
+    ].map((call) => call.map((value) => (
+      typeof value === 'string' ? value : JSON.stringify(value)
+    )).join(' ')).join('\n');
+    expect(logs).not.toContain(rawText);
+    expect(logs).not.toContain('respuesta privada del proveedor');
+    expect(logs).not.toContain('Provider private detail');
+    expect(logs).not.toContain('test-api-key');
+  });
+
+  test('un reintento manual incluye pendientes bloqueados', async () => {
+    mockGetPendingInbox.mockResolvedValue([]);
+
+    await processPendingInbox({ force: true });
+
+    expect(mockGetPendingInbox).toHaveBeenCalledWith(true);
   });
 
   test('procesa secuencialmente y no duplica capturas con batches concurrentes', async () => {
     const rows: MutableInboxRow[] = [
-      { id: 10, raw_text: 'Primera captura', created_at: 4, status: 'pending' },
-      { id: 11, raw_text: 'Segunda captura', created_at: 5, status: 'pending' },
+      pendingRow(10, 'Primera captura', 4),
+      pendingRow(11, 'Segunda captura', 5),
     ];
     useFakeDb(rows);
     let activeRequests = 0;

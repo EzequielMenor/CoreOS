@@ -14,33 +14,111 @@
 
 import type { InboxRow } from '@/db';
 import { dispatchRoutedResult, getDb, getPendingInbox } from '@/db';
+import {
+  getInboxErrorMessage,
+  InboxPipelineError,
+  isInboxErrorRetryable,
+  type InboxErrorCode,
+} from './inbox-diagnostics';
 import { processInboxText, type RouteType } from './llm';
 
 export type ProcessResult =
   | { skipped: true;  reason: 'not_found' | 'not_pending' }
   | { skipped: false; routeType: RouteType; inboxId: number }
-  | { skipped: false; error: string; retryable: true; inboxId: number };
+  | {
+      skipped: false;
+      error: string;
+      errorCode: InboxErrorCode;
+      retryable: boolean;
+      inboxId: number;
+    };
 
 export type BatchResult = {
   processed: number;
   failed: number;
   skipped: number;
-  errors: { inboxId: number; error: string }[];
+  errors: { inboxId: number; error: string; errorCode: InboxErrorCode }[];
 };
 
-// ponytail: helper local de soporte — coercea a string y trunca con …
-function truncate(s: unknown, n = 80): string {
-  const str = typeof s === 'string' ? s : String(s);
-  return str.length > n ? `${str.slice(0, n)}…` : str;
+type SafeDiagnosis = {
+  code: InboxErrorCode;
+  technicalCode: string;
+};
+
+const MAX_AUTO_ATTEMPTS = 5;
+const BASE_RETRY_DELAY_MS = 30_000;
+
+function diagnose(error: unknown, fallbackCode: InboxErrorCode): SafeDiagnosis {
+  if (error instanceof InboxPipelineError) {
+    return { code: error.code, technicalCode: error.technicalCode };
+  }
+  const safeType = error instanceof TypeError
+    ? 'TypeError'
+    : error instanceof Error
+      ? 'Error'
+      : typeof error;
+  return { code: fallbackCode, technicalCode: safeType };
 }
 
-// ponytail: helper local de soporte — normaliza Error a string, null-safe
-function toErrorMessage(err: unknown): string {
+function nextRetryAt(code: InboxErrorCode, attempt: number, now: number): number | null {
+  if (!isInboxErrorRetryable(code) || attempt >= MAX_AUTO_ATTEMPTS) return null;
+  const delay = BASE_RETRY_DELAY_MS * (2 ** Math.min(attempt - 1, 6));
+  return now + delay;
+}
+
+async function recordFailure(
+  db: Awaited<ReturnType<typeof getDb>>,
+  item: InboxRow,
+  diagnosis: SafeDiagnosis,
+): Promise<boolean> {
+  const attempt = item.attempt_count + 1;
+  const attemptedAt = Date.now();
+  const retryAt = nextRetryAt(diagnosis.code, attempt, attemptedAt);
   try {
-    return err instanceof Error ? err.message : String(err);
-  } catch {
-    return '[unserializable error]';
+    await db.runAsync(
+      `UPDATE inbox
+        SET error_code=?, last_attempt_at=?, attempt_count=attempt_count+1, next_retry_at=?
+        WHERE id=? AND status=?`,
+      diagnosis.code,
+      attemptedAt,
+      retryAt,
+      item.id,
+      'pending',
+    );
+  } catch (error) {
+    const persistenceFailure = diagnose(error, 'storage');
+    console.warn('[inbox] diagnostic persistence failed', {
+      inboxId: item.id,
+      category: persistenceFailure.code,
+      detail: persistenceFailure.technicalCode,
+    });
   }
+  return retryAt !== null;
+}
+
+async function failedResult(
+  db: Awaited<ReturnType<typeof getDb>>,
+  item: InboxRow,
+  diagnosis: SafeDiagnosis,
+): Promise<ProcessResult> {
+  const retryable = await recordFailure(db, item, diagnosis);
+  console.warn('[inbox] item failed', {
+    inboxId: item.id,
+    category: diagnosis.code,
+    detail: diagnosis.technicalCode,
+    attempt: item.attempt_count + 1,
+    retryable,
+  });
+  return {
+    skipped: false,
+    error:
+      !retryable && isInboxErrorRetryable(diagnosis.code)
+        ? 'Los reintentos automáticos están pausados. Reinténtalo manualmente.'
+        : getInboxErrorMessage(diagnosis.code),
+    errorCode: diagnosis.code,
+    retryable,
+    inboxId: item.id,
+  };
 }
 
 export async function processInboxItem(id: number): Promise<ProcessResult> {
@@ -48,14 +126,41 @@ export async function processInboxItem(id: number): Promise<ProcessResult> {
   let db: Awaited<ReturnType<typeof getDb>>;
   try {
     db = await getDb();
-  } catch (err) {
-    const msg = toErrorMessage(err);
-    console.warn(`[inbox] item ${id} db fail: ${truncate(msg)}`);
-    return { skipped: false, error: msg, retryable: true, inboxId: id };
+  } catch (error) {
+    const diagnosis = diagnose(error, 'storage');
+    console.warn('[inbox] database unavailable', {
+      inboxId: id,
+      category: diagnosis.code,
+      detail: diagnosis.technicalCode,
+    });
+    return {
+      skipped: false,
+      error: getInboxErrorMessage(diagnosis.code),
+      errorCode: diagnosis.code,
+      retryable: false,
+      inboxId: id,
+    };
   }
 
   // 2. leer item por id (SELECT inline — D3)
-  const item = await db.getFirstAsync<InboxRow>('SELECT * FROM inbox WHERE id=?', id);
+  let item: InboxRow | null;
+  try {
+    item = await db.getFirstAsync<InboxRow>('SELECT * FROM inbox WHERE id=?', id);
+  } catch (error) {
+    const diagnosis = diagnose(error, 'storage');
+    console.warn('[inbox] item read failed', {
+      inboxId: id,
+      category: diagnosis.code,
+      detail: diagnosis.technicalCode,
+    });
+    return {
+      skipped: false,
+      error: getInboxErrorMessage(diagnosis.code),
+      errorCode: diagnosis.code,
+      retryable: false,
+      inboxId: id,
+    };
+  }
   if (!item || item.status !== 'pending') {
     return { skipped: true, reason: !item ? 'not_found' : 'not_pending' };
   }
@@ -64,10 +169,8 @@ export async function processInboxItem(id: number): Promise<ProcessResult> {
   let routed: Awaited<ReturnType<typeof processInboxText>>;
   try {
     routed = await processInboxText(item.raw_text);
-  } catch (err) {
-    const msg = toErrorMessage(err);
-    console.warn(`[inbox] item ${id} LLM fail: ${truncate(msg)} | raw="${truncate(item.raw_text)}"`);
-    return { skipped: false, error: msg, retryable: true, inboxId: id };
+  } catch (error) {
+    return failedResult(db, item, diagnose(error, 'provider_error'));
   }
 
   // 4. transacción con lock optimista (D12, I2)
@@ -75,8 +178,11 @@ export async function processInboxItem(id: number): Promise<ProcessResult> {
     await db.withTransactionAsync(async () => {
       // ponytail: helper existente no lleva WHERE status='pending', inline necesario
       const result = await db.runAsync(
-        'UPDATE inbox SET status=? WHERE id=? AND status=?',
-        'processed', id, 'pending',
+        `UPDATE inbox
+          SET status=?, error_code=NULL, last_attempt_at=?,
+              attempt_count=attempt_count+1, next_retry_at=NULL
+          WHERE id=? AND status=?`,
+        'processed', Date.now(), id, 'pending',
       );
       // Si otro caller ya procesó este item, changes=0 → early return (commit vacío)
       if (result.changes === 0) return;
@@ -89,10 +195,8 @@ export async function processInboxItem(id: number): Promise<ProcessResult> {
     });
 
     return { skipped: false, routeType: routed.type, inboxId: id };
-  } catch (err) {
-    const msg = toErrorMessage(err);
-    console.warn(`[inbox] item ${id} dispatch fail: ${truncate(msg)} | raw="${truncate(item.raw_text)}"`);
-    return { skipped: false, error: msg, retryable: true, inboxId: id };
+  } catch (error) {
+    return failedResult(db, item, diagnose(error, 'dispatch'));
   }
 }
 
@@ -101,21 +205,25 @@ let _batchInFlight: Promise<BatchResult> | null = null;
 // Si un caller llega con el batch en vuelo, su insert es posterior a la lista
 // que el batch ya leyó: se marca retry y el owner da otra pasada al terminar.
 let _retryRequested = false;
+let _forceRetryRequested = false;
 
-export async function processPendingInbox(): Promise<BatchResult> {
+export async function processPendingInbox(options: { force?: boolean } = {}): Promise<BatchResult> {
   // Si ya hay un batch en vuelo, unirse y pedir pasada extra para el trabajo nuevo
   if (_batchInFlight) {
     _retryRequested = true;
+    _forceRetryRequested ||= options.force === true;
     return await _batchInFlight;
   }
 
-  _batchInFlight = doProcess();
+  _batchInFlight = doProcess(options.force === true);
   try {
     let result = await _batchInFlight;
     // Capturas nuevas mientras volábamos: pasar hasta drenar
     while (_retryRequested) {
       _retryRequested = false;
-      _batchInFlight = doProcess();
+      const force = _forceRetryRequested;
+      _forceRetryRequested = false;
+      _batchInFlight = doProcess(force);
       result = await _batchInFlight;
     }
     return result;
@@ -123,14 +231,26 @@ export async function processPendingInbox(): Promise<BatchResult> {
     _batchInFlight = null;
   }
 
-  async function doProcess(): Promise<BatchResult> {
+  async function doProcess(force: boolean): Promise<BatchResult> {
     let items: InboxRow[];
     try {
-      items = await getPendingInbox();
-    } catch (err) {
-      const msg = toErrorMessage(err);
-      console.warn(`[inbox] batch fail: db getPendingInbox → ${msg}`);
-      return { processed: 0, failed: 1, skipped: 0, errors: [{ inboxId: -1, error: msg }] };
+      items = await getPendingInbox(force);
+    } catch (error) {
+      const diagnosis = diagnose(error, 'storage');
+      console.warn('[inbox] batch read failed', {
+        category: diagnosis.code,
+        detail: diagnosis.technicalCode,
+      });
+      return {
+        processed: 0,
+        failed: 1,
+        skipped: 0,
+        errors: [{
+          inboxId: -1,
+          error: getInboxErrorMessage(diagnosis.code),
+          errorCode: diagnosis.code,
+        }],
+      };
     }
 
     const result: BatchResult = { processed: 0, failed: 0, skipped: 0, errors: [] };
@@ -148,7 +268,7 @@ export async function processPendingInbox(): Promise<BatchResult> {
         result.processed++;
       } else {
         result.failed++;
-        result.errors.push({ inboxId: r.inboxId, error: r.error });
+        result.errors.push({ inboxId: r.inboxId, error: r.error, errorCode: r.errorCode });
       }
     }
 
