@@ -18,15 +18,19 @@ import { useTheme } from '@/hooks/use-theme';
 import { ButtonBrand } from '@/components/ButtonBrand';
 import { ModelSelectorModal } from '@/components/ModelSelectorModal';
 import {
+  checkCodexPlatformSupport,
   disconnectProvider,
   fetchProviderModels,
   getActiveProviderId,
+  getProviderAuthMethod,
   getProviderConfig,
   getSupportedProviders,
   initiateOpenRouterOAuth,
   isProviderConfigured,
   PROVIDERS,
+  saveProviderAuthMethod,
   saveProviderConfig,
+  type OpenAIAuthMode,
   type SupportedProviderId,
   validateProviderConnection,
 } from '@/services/llm-providers';
@@ -37,6 +41,7 @@ export default function AjustesScreen() {
 
   const [activeProviderId, setActiveProviderId] = useState<SupportedProviderId>('minimax');
   const [selectedProviderId, setSelectedProviderId] = useState<SupportedProviderId>('minimax');
+  const [openAiAuthMethod, setOpenAiAuthMethod] = useState<OpenAIAuthMode>('apiKey');
 
   // Valores activos en el sistema
   const [activeModel, setActiveModel] = useState('');
@@ -84,6 +89,11 @@ export default function AjustesScreen() {
 
         const configured = await isProviderConfigured(currentActive);
         if (isMounted) setIsCurrentConfigured(configured);
+
+        const openAiMethod = await getProviderAuthMethod('openai');
+        if (isMounted) {
+          setOpenAiAuthMethod(openAiMethod === 'chatgpt-codex' ? 'chatgpt-codex' : 'apiKey');
+        }
       } catch {
         // Retener defaults en caso de fallo
       }
@@ -99,6 +109,15 @@ export default function AjustesScreen() {
     setSelectedProviderId(providerId);
     setModelos([]);
     setErrorModelos(null);
+
+    if (providerId === 'openai') {
+      try {
+        const method = await getProviderAuthMethod('openai');
+        setOpenAiAuthMethod(method === 'chatgpt-codex' ? 'chatgpt-codex' : 'apiKey');
+      } catch {
+        setOpenAiAuthMethod('apiKey');
+      }
+    }
 
     try {
       const config = await getProviderConfig(providerId);
@@ -136,6 +155,18 @@ export default function AjustesScreen() {
       Alert.alert('Error', 'La Base URL no puede estar vacía para el proveedor personalizado.');
       return;
     }
+
+    if (selectedProviderId === 'openai' && openAiAuthMethod === 'chatgpt-codex') {
+      const codexCheck = checkCodexPlatformSupport();
+      if (!codexCheck.supported) {
+        Alert.alert(
+          'Modo no disponible en esta plataforma',
+          `${codexCheck.reason}\n\nPara activar OpenAI, selecciona el método 'API Key'.`,
+        );
+        return;
+      }
+    }
+
     if (!apiKey.trim()) {
       Alert.alert('Error', `La API Key para ${selectedProvider.name} no puede estar vacía.`);
       return;
@@ -169,6 +200,10 @@ export default function AjustesScreen() {
         model: model.trim(),
         makeActive: true,
       });
+
+      if (selectedProviderId === 'openai') {
+        await saveProviderAuthMethod('openai', openAiAuthMethod);
+      }
 
       await SecureStore.setItemAsync('hasOnboarded', 'true');
 
@@ -253,6 +288,10 @@ export default function AjustesScreen() {
               setModel(selectedProvider.defaultModel);
               setBaseUrl(selectedProvider.defaultBaseUrl);
               setIsCurrentConfigured(false);
+
+              if (selectedProviderId === 'openai') {
+                setOpenAiAuthMethod('apiKey');
+              }
 
               if (selectedProviderId === activeProviderId) {
                 setActiveApiKey('');
@@ -511,161 +550,325 @@ export default function AjustesScreen() {
               },
             ]}
           >
-            {/* Nota explicativa de consumo vs API */}
-            {selectedProvider.subscriptionNote && (
-              <View
-                style={[
-                  styles.subscriptionCallout,
-                  {
-                    backgroundColor: theme.notes.bg.elevated,
-                    borderColor: theme.notes.border.subtle,
-                  },
-                ]}
-              >
-                <Text style={[styles.subscriptionCalloutText, { color: theme.notes.text.secondary }]}>
-                  💡 {selectedProvider.subscriptionNote}
-                </Text>
-              </View>
-            )}
-
-            {/* Si el proveedor ofrece OAuth oficial, mostrar botón de conexión */}
-            {supportsOAuth && (
-              <View style={styles.oauthSection}>
-                <ButtonBrand
-                  disabled={authenticatingOAuth || isWeb}
-                  loading={authenticatingOAuth}
-                  onPress={handleOAuthLogin}
-                  size="md"
-                  title="Conectar con OpenRouter (OAuth)"
-                  variant="secondary"
-                />
-                <View style={styles.dividerRow}>
-                  <View style={[styles.dividerLine, { backgroundColor: theme.notes.border.subtle }]} />
-                  <Text style={[styles.dividerText, { color: theme.notes.text.muted }]}>
-                    o mediante API Key
-                  </Text>
-                  <View style={[styles.dividerLine, { backgroundColor: theme.notes.border.subtle }]} />
-                </View>
-              </View>
-            )}
-
-            {/* Base URL */}
-            {selectedProvider.requiresCustomBaseUrl ? (
-              <View style={styles.field}>
-                <Text style={[styles.label, { color: theme.notes.text.primary }]}>
-                  Base URL (compatible con OpenAI)
-                </Text>
-                <TextInput
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  keyboardType="url"
-                  onChangeText={setBaseUrl}
-                  placeholder="http://localhost:11434/v1"
-                  placeholderTextColor={theme.notes.text.muted}
-                  style={[
-                    styles.input,
-                    {
-                      backgroundColor: theme.notes.bg.elevated,
-                      borderColor: theme.notes.border.strong,
-                      color: theme.notes.text.primary,
-                    },
-                  ]}
-                  value={baseUrl}
-                />
-                <Text style={[styles.hint, { color: theme.notes.text.muted }]}>
-                  Servidor local (Ollama, LM Studio) o proxy compatible con Chat Completions.
-                </Text>
-              </View>
-            ) : (
-              <View style={styles.field}>
-                <Text style={[styles.label, { color: theme.notes.text.muted }]}>
-                  Endpoint oficial
-                </Text>
-                <Text style={[styles.readOnlyUrl, { color: theme.notes.text.secondary }]}>
-                  {selectedProvider.defaultBaseUrl}
-                </Text>
-              </View>
-            )}
-
-            {/* Formulario de API Key */}
-            <View style={styles.field}>
-              <Text style={[styles.label, { color: theme.notes.text.primary }]}>
-                API Key
-              </Text>
-              <TextInput
-                autoCapitalize="none"
-                autoCorrect={false}
-                onChangeText={setApiKey}
-                placeholder={selectedProvider.id === 'custom' ? 'sk-... (opcional si es local)' : 'sk-...'}
-                placeholderTextColor={theme.notes.text.muted}
-                secureTextEntry
-                style={[
-                  styles.input,
-                  {
-                    backgroundColor: theme.notes.bg.elevated,
-                    borderColor: theme.notes.border.strong,
-                    color: theme.notes.text.primary,
-                  },
-                ]}
-                value={apiKey}
-              />
-              {!isWeb && (
-                <Text style={[styles.hint, { color: theme.notes.text.muted }]}>
-                  Se almacena de forma segura en el Keychain del dispositivo.
-                </Text>
-              )}
-            </View>
-
-            {/* Selector de Modelo con modal */}
-            <View style={styles.field}>
-              <Text style={[styles.label, { color: theme.notes.text.primary }]}>
-                Modelo seleccionado
-              </Text>
-
-              <View
-                style={[
-                  styles.modelSelectionCard,
-                  {
-                    backgroundColor: theme.notes.bg.elevated,
-                    borderColor: theme.notes.border.strong,
-                  },
-                ]}
-              >
-                <View style={styles.modelTextContainer}>
-                  <Text
-                    ellipsizeMode="middle"
-                    numberOfLines={1}
-                    style={[styles.modelNameDisplay, { color: theme.notes.text.primary }]}
-                  >
-                    {model || selectedProvider.defaultModel || 'Sin modelo seleccionado'}
-                  </Text>
-                  <Text style={[styles.modelProviderCaption, { color: theme.notes.text.muted }]}>
-                    Proveedor: {selectedProvider.name}
-                  </Text>
-                </View>
-
-                <ButtonBrand
-                  onPress={abrirSelectorModelos}
-                  size="sm"
-                  title="Elegir modelo"
-                  variant="secondary"
-                />
-              </View>
-            </View>
-
-            {/* Botón de desconexión si el proveedor ya está configurado */}
-            {isCurrentConfigured && !isWeb && (
-              <View style={styles.disconnectContainer}>
+            {/* Si es OpenAI, selector de método: API Key vs ChatGPT / Codex */}
+            {selectedProvider.id === 'openai' && (
+              <View style={[styles.authMethodSelector, { borderColor: theme.notes.border.subtle }]}>
                 <TouchableOpacity
                   activeOpacity={0.7}
-                  onPress={handleDisconnect}
-                  style={styles.disconnectButton}
+                  onPress={() => {
+                    setOpenAiAuthMethod('apiKey');
+                  }}
+                  style={[
+                    styles.authMethodTab,
+                    {
+                      backgroundColor:
+                        openAiAuthMethod === 'apiKey'
+                          ? theme.notes.bg.elevated
+                          : theme.notes.bg.surface,
+                      borderColor:
+                        openAiAuthMethod === 'apiKey'
+                          ? theme.notes.accent.primary
+                          : theme.notes.border.subtle,
+                    },
+                  ]}
                 >
-                  <Text style={[styles.disconnectText, { color: theme.notes.semantic.danger }]}>
-                    Desconectar {selectedProvider.name}
+                  <Text
+                    style={[
+                      styles.authMethodTabText,
+                      {
+                        color:
+                          openAiAuthMethod === 'apiKey'
+                            ? theme.notes.text.primary
+                            : theme.notes.text.secondary,
+                        fontWeight: openAiAuthMethod === 'apiKey' ? '700' : '500',
+                      },
+                    ]}
+                  >
+                    API Key
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  onPress={() => {
+                    setOpenAiAuthMethod('chatgpt-codex');
+                  }}
+                  style={[
+                    styles.authMethodTab,
+                    {
+                      backgroundColor:
+                        openAiAuthMethod === 'chatgpt-codex'
+                          ? theme.notes.bg.elevated
+                          : theme.notes.bg.surface,
+                      borderColor:
+                        openAiAuthMethod === 'chatgpt-codex'
+                          ? theme.notes.accent.primary
+                          : theme.notes.border.subtle,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.authMethodTabText,
+                      {
+                        color:
+                          openAiAuthMethod === 'chatgpt-codex'
+                            ? theme.notes.text.primary
+                            : theme.notes.text.secondary,
+                        fontWeight: openAiAuthMethod === 'chatgpt-codex' ? '700' : '500',
+                      },
+                    ]}
+                  >
+                    ChatGPT / Codex
                   </Text>
                 </TouchableOpacity>
               </View>
+            )}
+
+            {/* Vista condicional: Modo ChatGPT / Codex vs Modo API Key / Proveedores estándar */}
+            {selectedProvider.id === 'openai' && openAiAuthMethod === 'chatgpt-codex' ? (
+              <View style={styles.codexContainer}>
+                <View
+                  style={[
+                    styles.codexStatusCard,
+                    {
+                      backgroundColor: theme.notes.bg.elevated,
+                      borderColor: theme.notes.border.subtle,
+                    },
+                  ]}
+                >
+                  <View style={styles.codexHeaderRow}>
+                    <Text style={[styles.codexTitle, { color: theme.notes.text.primary }]}>
+                      Suscripción de ChatGPT (Codex)
+                    </Text>
+                    <View
+                      style={[
+                        styles.codexBadge,
+                        {
+                          backgroundColor: 'rgba(199, 125, 42, 0.12)',
+                          borderColor: theme.notes.semantic.warning,
+                        },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.codexBadgeText,
+                          { color: theme.notes.semantic.warning },
+                        ]}
+                      >
+                        No disponible en iOS
+                      </Text>
+                    </View>
+                  </View>
+
+                  <Text style={[styles.codexDescription, { color: theme.notes.text.secondary }]}>
+                    Permite utilizar los límites de Codex incluidos en tu suscripción de ChatGPT Plus, Pro o Team mediante autenticación OAuth gestionada.
+                  </Text>
+
+                  <View
+                    style={[
+                      styles.codexBlockerBox,
+                      {
+                        backgroundColor: theme.notes.bg.surface,
+                        borderColor: theme.notes.border.subtle,
+                      },
+                    ]}
+                  >
+                    <Text style={[styles.codexBlockerTitle, { color: theme.notes.text.primary }]}>
+                      🔒 Requisito técnico de runtime
+                    </Text>
+                    <Text style={[styles.codexBlockerText, { color: theme.notes.text.secondary }]}>
+                      OpenAI únicamente ofrece este acceso a través del daemon oficial Codex App Server (CLI en escritorio). En iOS / Expo no es posible ejecutar daemons en segundo plano ni procesos nativos, y OpenAI no dispone de un SDK móvil ni de un flujo OAuth público para clientes móviles sin backend.
+                    </Text>
+                    <Text style={[styles.codexBlockerText, { color: theme.notes.text.muted }]}>
+                      Para respetar la arquitectura local-first de CoreOS y evitar workarounds no soportados (como extracción de tokens o ingeniería inversa), esta opción se encuentra deshabilitada en esta plataforma.
+                    </Text>
+                  </View>
+
+                  <ButtonBrand
+                    disabled
+                    onPress={() => {}}
+                    size="md"
+                    title="Continuar con ChatGPT (Codex)"
+                    variant="secondary"
+                  />
+                </View>
+
+                {/* Botón de desconexión */}
+                {isCurrentConfigured && !isWeb && (
+                  <View style={styles.disconnectContainer}>
+                    <TouchableOpacity
+                      activeOpacity={0.7}
+                      onPress={handleDisconnect}
+                      style={styles.disconnectButton}
+                    >
+                      <Text style={[styles.disconnectText, { color: theme.notes.semantic.danger }]}>
+                        Desconectar {selectedProvider.name}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </View>
+            ) : (
+              // Modo estándar API Key / Proveedores normales
+              <>
+                {/* Nota explicativa de consumo vs API */}
+                {selectedProvider.subscriptionNote && (
+                  <View
+                    style={[
+                      styles.subscriptionCallout,
+                      {
+                        backgroundColor: theme.notes.bg.elevated,
+                        borderColor: theme.notes.border.subtle,
+                      },
+                    ]}
+                  >
+                    <Text style={[styles.subscriptionCalloutText, { color: theme.notes.text.secondary }]}>
+                      💡 {selectedProvider.subscriptionNote}
+                    </Text>
+                  </View>
+                )}
+
+                {/* Si el proveedor ofrece OAuth oficial, mostrar botón de conexión */}
+                {supportsOAuth && (
+                  <View style={styles.oauthSection}>
+                    <ButtonBrand
+                      disabled={authenticatingOAuth || isWeb}
+                      loading={authenticatingOAuth}
+                      onPress={handleOAuthLogin}
+                      size="md"
+                      title="Conectar con OpenRouter (OAuth)"
+                      variant="secondary"
+                    />
+                    <View style={styles.dividerRow}>
+                      <View style={[styles.dividerLine, { backgroundColor: theme.notes.border.subtle }]} />
+                      <Text style={[styles.dividerText, { color: theme.notes.text.muted }]}>
+                        o mediante API Key
+                      </Text>
+                      <View style={[styles.dividerLine, { backgroundColor: theme.notes.border.subtle }]} />
+                    </View>
+                  </View>
+                )}
+
+                {/* Base URL */}
+                {selectedProvider.requiresCustomBaseUrl ? (
+                  <View style={styles.field}>
+                    <Text style={[styles.label, { color: theme.notes.text.primary }]}>
+                      Base URL (compatible con OpenAI)
+                    </Text>
+                    <TextInput
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      keyboardType="url"
+                      onChangeText={setBaseUrl}
+                      placeholder="http://localhost:11434/v1"
+                      placeholderTextColor={theme.notes.text.muted}
+                      style={[
+                        styles.input,
+                        {
+                          backgroundColor: theme.notes.bg.elevated,
+                          borderColor: theme.notes.border.strong,
+                          color: theme.notes.text.primary,
+                        },
+                      ]}
+                      value={baseUrl}
+                    />
+                    <Text style={[styles.hint, { color: theme.notes.text.muted }]}>
+                      Servidor local (Ollama, LM Studio) o proxy compatible con Chat Completions.
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={styles.field}>
+                    <Text style={[styles.label, { color: theme.notes.text.muted }]}>
+                      Endpoint oficial
+                    </Text>
+                    <Text style={[styles.readOnlyUrl, { color: theme.notes.text.secondary }]}>
+                      {selectedProvider.defaultBaseUrl}
+                    </Text>
+                  </View>
+                )}
+
+                {/* Formulario de API Key */}
+                <View style={styles.field}>
+                  <Text style={[styles.label, { color: theme.notes.text.primary }]}>
+                    API Key
+                  </Text>
+                  <TextInput
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    onChangeText={setApiKey}
+                    placeholder={selectedProvider.id === 'custom' ? 'sk-... (opcional si es local)' : 'sk-...'}
+                    placeholderTextColor={theme.notes.text.muted}
+                    secureTextEntry
+                    style={[
+                      styles.input,
+                      {
+                        backgroundColor: theme.notes.bg.elevated,
+                        borderColor: theme.notes.border.strong,
+                        color: theme.notes.text.primary,
+                      },
+                    ]}
+                    value={apiKey}
+                  />
+                  {!isWeb && (
+                    <Text style={[styles.hint, { color: theme.notes.text.muted }]}>
+                      Se almacena de forma segura en el Keychain del dispositivo.
+                    </Text>
+                  )}
+                </View>
+
+                {/* Selector de Modelo con modal */}
+                <View style={styles.field}>
+                  <Text style={[styles.label, { color: theme.notes.text.primary }]}>
+                    Modelo seleccionado
+                  </Text>
+
+                  <View
+                    style={[
+                      styles.modelSelectionCard,
+                      {
+                        backgroundColor: theme.notes.bg.elevated,
+                        borderColor: theme.notes.border.strong,
+                      },
+                    ]}
+                  >
+                    <View style={styles.modelTextContainer}>
+                      <Text
+                        ellipsizeMode="middle"
+                        numberOfLines={1}
+                        style={[styles.modelNameDisplay, { color: theme.notes.text.primary }]}
+                      >
+                        {model || selectedProvider.defaultModel || 'Sin modelo seleccionado'}
+                      </Text>
+                      <Text style={[styles.modelProviderCaption, { color: theme.notes.text.muted }]}>
+                        Proveedor: {selectedProvider.name}
+                      </Text>
+                    </View>
+
+                    <ButtonBrand
+                      onPress={abrirSelectorModelos}
+                      size="sm"
+                      title="Elegir modelo"
+                      variant="secondary"
+                    />
+                  </View>
+                </View>
+
+                {/* Botón de desconexión si el proveedor ya está configurado */}
+                {isCurrentConfigured && !isWeb && (
+                  <View style={styles.disconnectContainer}>
+                    <TouchableOpacity
+                      activeOpacity={0.7}
+                      onPress={handleDisconnect}
+                      style={styles.disconnectButton}
+                    >
+                      <Text style={[styles.disconnectText, { color: theme.notes.semantic.danger }]}>
+                        Desconectar {selectedProvider.name}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </>
             )}
           </View>
         </View>
@@ -673,20 +876,36 @@ export default function AjustesScreen() {
         {/* Botón de guardar / activar con validación previa */}
         {!isWeb && (
           <View style={styles.buttonContainer}>
-            <ButtonBrand
-              disabled={saving}
-              loading={saving}
-              onPress={guardar}
-              size="md"
-              title={
-                saving
-                  ? 'Verificando conexión…'
-                  : selectedProviderId === activeProviderId
-                    ? 'Verificar y Guardar'
-                    : `Verificar y Activar ${selectedProvider.name}`
-              }
-              variant="primary"
-            />
+            {selectedProviderId === 'openai' && openAiAuthMethod === 'chatgpt-codex' ? (
+              <View
+                style={[
+                  styles.disabledActionNote,
+                  {
+                    backgroundColor: theme.notes.bg.elevated,
+                    borderColor: theme.notes.border.subtle,
+                  },
+                ]}
+              >
+                <Text style={[styles.disabledActionNoteText, { color: theme.notes.text.muted }]}>
+                  El modo ChatGPT / Codex no puede activarse en iOS. Cambia a «API Key» para configurar y conectar OpenAI.
+                </Text>
+              </View>
+            ) : (
+              <ButtonBrand
+                disabled={saving}
+                loading={saving}
+                onPress={guardar}
+                size="md"
+                title={
+                  saving
+                    ? 'Verificando conexión…'
+                    : selectedProviderId === activeProviderId
+                      ? 'Verificar y Guardar'
+                      : `Verificar y Activar ${selectedProvider.name}`
+                }
+                variant="primary"
+              />
+            )}
           </View>
         )}
       </ScrollView>
@@ -934,5 +1153,82 @@ const styles = StyleSheet.create({
   },
   buttonContainer: {
     marginTop: NoteSpacing.sm,
+  },
+  authMethodSelector: {
+    flexDirection: 'row',
+    borderRadius: Radii.md,
+    borderWidth: 1,
+    padding: 3,
+    gap: 4,
+  },
+  authMethodTab: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: Radii.sm,
+    borderWidth: 1,
+  },
+  authMethodTabText: {
+    fontSize: 13,
+  },
+  codexContainer: {
+    gap: NoteSpacing.lg,
+  },
+  codexStatusCard: {
+    borderWidth: 1,
+    borderRadius: Radii.md,
+    padding: NoteSpacing.md,
+    gap: NoteSpacing.sm,
+  },
+  codexHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: NoteSpacing.xs,
+  },
+  codexTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  codexBadge: {
+    borderWidth: 1,
+    borderRadius: Radii.full,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  codexBadgeText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  codexDescription: {
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  codexBlockerBox: {
+    borderWidth: 1,
+    borderRadius: Radii.sm,
+    padding: NoteSpacing.sm,
+    gap: 6,
+  },
+  codexBlockerTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  codexBlockerText: {
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  disabledActionNote: {
+    borderWidth: 1,
+    borderRadius: Radii.md,
+    padding: NoteSpacing.md,
+    alignItems: 'center',
+  },
+  disabledActionNoteText: {
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 18,
   },
 });

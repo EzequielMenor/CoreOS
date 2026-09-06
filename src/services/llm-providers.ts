@@ -7,7 +7,8 @@ WebBrowser.maybeCompleteAuthSession();
 
 export type ProviderId = 'minimax' | 'openai' | 'openrouter' | 'custom' | 'anthropic' | 'gemini';
 export type SupportedProviderId = 'minimax' | 'openai' | 'openrouter' | 'custom';
-export type AuthMethod = 'apiKey' | 'oauth';
+export type AuthMethod = 'apiKey' | 'oauth' | 'chatgpt-codex';
+export type OpenAIAuthMode = 'apiKey' | 'chatgpt-codex';
 export type TransportType = 'openai-compatible' | 'anthropic' | 'gemini';
 export type ProviderStatus = 'ready' | 'coming-soon';
 
@@ -42,12 +43,12 @@ export const PROVIDERS: Record<ProviderId, LLMProvider> = {
     name: 'OpenAI',
     defaultBaseUrl: 'https://api.openai.com/v1',
     defaultModel: 'gpt-4o-mini',
-    authMethods: ['apiKey'],
+    authMethods: ['apiKey', 'chatgpt-codex'],
     transport: 'openai-compatible',
     status: 'ready',
     supportsModelList: true,
     subscriptionNote:
-      'Una suscripción de ChatGPT Plus o Team no incluye acceso a la API comercial. Obtén tu clave en platform.openai.com.',
+      'Una suscripción de ChatGPT Plus o Team no incluye acceso a la API comercial de OpenAI. El acceso vía suscripción oficial de Codex requiere un entorno desktop (App Server).',
   },
   openrouter: {
     id: 'openrouter',
@@ -113,6 +114,7 @@ export const SECURE_KEYS = {
   providerApiKey: (id: string) => `llm.provider.${id}.apiKey`,
   providerModel: (id: string) => `llm.provider.${id}.model`,
   providerBaseUrl: (id: string) => `llm.provider.${id}.baseUrl`,
+  providerAuthMethod: (id: string) => `llm.provider.${id}.authMethod`,
 } as const;
 
 export function getSupportedProviders(): (LLMProvider & { id: SupportedProviderId })[] {
@@ -299,6 +301,47 @@ export async function saveProviderConfig(
   }
 }
 
+export interface CodexRuntimeCheck {
+  supported: boolean;
+  reason: string;
+}
+
+export function checkCodexPlatformSupport(): CodexRuntimeCheck {
+  // El acceso oficial a la suscripción de ChatGPT mediante Codex requiere el daemon
+  // local Codex App Server (codex-rs / CLI en macOS, Linux y Windows).
+  // En iOS y Web (plataformas de CoreOS), el sandbox impide ejecutar daemons nativos
+  // y OpenAI no ofrece un SDK o flujo OAuth público para clientes móviles sin backend.
+  if (Platform.OS === 'ios' || Platform.OS === 'android' || Platform.OS === 'web') {
+    return {
+      supported: false,
+      reason:
+        'El acceso mediante suscripción de ChatGPT requiere el runtime oficial de Codex App Server (disponible exclusivamente en entornos desktop/CLI como macOS, Linux y Windows). En iOS y Web, el sandbox del sistema no permite ejecutar procesos o daemons nativos en segundo plano, y OpenAI no ofrece un SDK móvil ni un flujo OAuth público para clientes móviles sin backend. Para respetar la arquitectura local-first de CoreOS y no usar endpoints privados ni tokens extraídos, esta opción se encuentra deshabilitada en esta plataforma.',
+    };
+  }
+
+  return {
+    supported: true,
+    reason: 'Plataforma compatible con el runtime oficial de Codex App Server.',
+  };
+}
+
+export async function getProviderAuthMethod(providerId: SupportedProviderId): Promise<AuthMethod> {
+  if (Platform.OS === 'web') return 'apiKey';
+  const val = await SecureStore.getItemAsync(SECURE_KEYS.providerAuthMethod(providerId));
+  if (val === 'chatgpt-codex' || val === 'oauth' || val === 'apiKey') {
+    return val as AuthMethod;
+  }
+  return 'apiKey';
+}
+
+export async function saveProviderAuthMethod(
+  providerId: SupportedProviderId,
+  method: AuthMethod,
+): Promise<void> {
+  if (Platform.OS === 'web') return;
+  await SecureStore.setItemAsync(SECURE_KEYS.providerAuthMethod(providerId), method);
+}
+
 export async function disconnectProvider(providerId: SupportedProviderId): Promise<void> {
   if (Platform.OS === 'web') return;
 
@@ -306,6 +349,7 @@ export async function disconnectProvider(providerId: SupportedProviderId): Promi
     SecureStore.deleteItemAsync(SECURE_KEYS.providerApiKey(providerId)).catch(() => {}),
     SecureStore.deleteItemAsync(SECURE_KEYS.providerModel(providerId)).catch(() => {}),
     SecureStore.deleteItemAsync(SECURE_KEYS.providerBaseUrl(providerId)).catch(() => {}),
+    SecureStore.deleteItemAsync(SECURE_KEYS.providerAuthMethod(providerId)).catch(() => {}),
   ]);
 
   const activeId = await getActiveProviderId();
@@ -456,6 +500,16 @@ export async function getActiveLLMConfig(): Promise<ActiveLLMConfig> {
   const provider = PROVIDERS[providerId];
   const stored = await getProviderConfig(providerId);
 
+  const authMethod = await getProviderAuthMethod(providerId);
+  if (providerId === 'openai' && authMethod === 'chatgpt-codex') {
+    const codexCheck = checkCodexPlatformSupport();
+    if (!codexCheck.supported) {
+      throw new Error(
+        `ChatGPT / Codex no está disponible en esta plataforma (${Platform.OS}). Configura una API Key de OpenAI o utiliza el proveedor Personalizado.`,
+      );
+    }
+  }
+
   if (!stored.apiKey.trim()) {
     throw new Error(`API Key no configurada para ${provider.name}. Ve a Ajustes y configura tu proveedor.`);
   }
@@ -492,10 +546,19 @@ export async function getActiveLLMConfig(): Promise<ActiveLLMConfig> {
 
 export async function fetchProviderModels(
   providerId: SupportedProviderId,
-  override?: { baseUrl?: string; apiKey?: string },
+  override?: { baseUrl?: string; apiKey?: string; authMethod?: AuthMethod },
 ): Promise<string[]> {
   const provider = PROVIDERS[providerId];
   if (!provider || !provider.supportsModelList) {
+    return [];
+  }
+
+  const effectiveAuthMethod =
+    override?.authMethod ?? (await getProviderAuthMethod(providerId));
+
+  // En ChatGPT/Codex, los modelos se obtienen dinámicamente mediante el protocolo
+  // JSON-RPC de Codex App Server (model/list) cuando exista un runtime activo.
+  if (providerId === 'openai' && effectiveAuthMethod === 'chatgpt-codex') {
     return [];
   }
 
