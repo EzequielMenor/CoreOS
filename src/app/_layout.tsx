@@ -1,16 +1,16 @@
 import { DarkTheme, DefaultTheme, ThemeProvider, Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect, useMemo, useState } from 'react';
-import { AppState, StyleSheet, Text, View, useColorScheme, type AppStateStatus } from 'react-native';
+import { AppState, Pressable, StyleSheet, Text, View, useColorScheme, type AppStateStatus } from 'react-native';
 import * as Network from 'expo-network';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
 import * as Linking from 'expo-linking';
-
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { initDb } from '@/db';
 import { captureInbox } from '@/services/capture';
+import { notifyCapturePersisted, trackCaptureOutcome } from '@/lib/capture-feedback';
 import { triggerAutomaticInboxProcessing } from '@/services/inbox';
 import { useNotesStore } from '@/stores/notes';
 import { useTagsStore } from '@/stores/tags';
@@ -66,8 +66,10 @@ export default function TabLayout() {
       const text = parsed.queryParams?.text;
       if (typeof text === 'string' && text.trim().length > 0) {
         captureInbox(text.trim())
-          .then(() => {
-            Toast.show({ type: 'success', text1: 'Captura recibida' });
+          .then(({ inboxId, processing }) => {
+            // Solo persistencia; el destino llega al terminar el batch.
+            notifyCapturePersisted();
+            trackCaptureOutcome(processing, inboxId);
           })
           .catch(notifyError('Inbox DeepLink'));
       }
@@ -132,6 +134,28 @@ export default function TabLayout() {
           <Text style={[styles.customToastTitle, { color: themeColors.notes.text.primary }]}>{props.text1}</Text>
           {props.text2 ? <Text style={[styles.customToastSubtitle, { color: themeColors.notes.text.secondary }]}>{props.text2}</Text> : null}
         </View>
+      </View>
+    ),
+    // Toast de resultado con acción «Abrir» (capturas clasificadas). La lib
+    // reenvía `props` de Toast.show({ props }) al componente de la config.
+    successAction: ({ text1, props }: { text1?: string; text2?: string; props?: { actionLabel?: string; onAction?: () => void } }) => (
+      <View style={[styles.customToast, { backgroundColor: themeColors.notes.bg.elevated, borderColor: themeColors.notes.border.subtle }]}>
+        <View style={[styles.iconWrap, { backgroundColor: themeColors.notes.semantic.success + '20' }]}>
+          <Text style={{ fontSize: 16 }}>✨</Text>
+        </View>
+        <View style={styles.textWrap}>
+          <Text style={[styles.customToastTitle, { color: themeColors.notes.text.primary }]}>{text1}</Text>
+        </View>
+        {props?.onAction ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={props.actionLabel ?? 'Abrir'}
+            onPress={props.onAction}
+            hitSlop={8}
+            style={({ pressed }) => [styles.toastAction, { opacity: pressed ? 0.6 : 1 }]}>
+            <Text style={[styles.toastActionText, { color: themeColors.notes.accent.primary }]}>{props.actionLabel ?? 'Abrir'}</Text>
+          </Pressable>
+        ) : null}
       </View>
     ),
   }), [themeColors]);
@@ -239,5 +263,14 @@ const styles = StyleSheet.create({
   customToastSubtitle: {
     fontSize: 13,
     marginTop: 2,
+  },
+  toastAction: {
+    marginLeft: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  toastActionText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

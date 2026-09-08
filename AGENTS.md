@@ -79,7 +79,8 @@ src/db/          CORE      — singleton SQLite (hotspot, fan-in alto)
 src/db/queries/  CORE      — notes, tags, tareas activas (gastos/habitos/sueno sin UI)
 src/services/    ENTRY     — captura segura, cliente LLM, orquestación inbox
 src/hooks/       CORE      — useTheme, useColorScheme, useNoteEditor
-src/lib/         CORE      — animations (Reanimated + haptics), note-save-gate
+src/lib/         CORE      — animations (Reanimated + haptics), note-save-gate,
+                            capture-feedback (toast de destino por captura)
 src/constants/   CORE      — tokens de tema (read-only)
 ```
 
@@ -93,8 +94,15 @@ Entrada libre (texto)
       → processInboxItem()                    [services/inbox.ts]
           → processInboxText()                [services/llm.ts]   HTTP → MiniMax
       → RouteType { nota | gasto | tarea | habito | sueno }
-  → dispatchRoutedResult(type, content, raw_text)  [db/index.tsx ~L656]
-      → INSERT en tabla correspondiente
+  → dispatchRoutedResult(type, content, raw_text)  [db/index.tsx]
+      → INSERT en tabla correspondiente → rowids → CaptureOutcome
+  → BatchResult.outcomes: [{ inboxId, routeType, targetIds }]  (atribuible
+    por captura; el mutex acumula todas las pasadas del drenaje y los
+    joiners reciben el mismo resultado).
+  → notifyCapturePersisted() + trackCaptureOutcome()  [lib/capture-feedback.ts]
+      → «Captura guardada / Pendiente de clasificar» → luego «Guardado como
+        nota|tarea» con «Abrir» (nota → /notas/[id], tarea → /tareas) o
+        gasto/hábito/sueño sin acción. Nunca «Clasificando…» antes de tiempo.
   → Nota: `raw_text` es fuente canónica; captura tipo nota = UNA nota
     con `body_md = raw_text` exacto (LLM solo aporta title/tags).
   → Stores Zustand refrescan en focus
@@ -150,7 +158,7 @@ CoreOS/
 │   ├── db/
 │   │   └── queries/             Módulos de query por dominio
 │   ├── hooks/                   useTheme, useColorScheme, useNoteEditor
-│   ├── lib/                     animations.ts + note-save-gate
+│   ├── lib/                     animations.ts + note-save-gate + capture-feedback.ts
 │   ├── services/                llm.ts, inbox.ts
 │   └── stores/                  Zustand stores (notes, tags, ui, tareas)
 ├── docs/
@@ -480,7 +488,7 @@ Qualified names para `codebase-memory` (`codebase-memory_search_graph`,
 | `CoreOS.src.db.queries.tareas.normalizeDueDate` | `src/db/queries/tareas.ts` | Parser fechas libres → YYYY-MM-DD |
 | `CoreOS.src.services.llm.processInboxText` | `src/services/llm.ts` | Llamada API LLM (inyecta fecha local) |
 | `CoreOS.src.services.inbox.processInboxItem` | `src/services/inbox.ts` | Pipeline un ítem |
-| `CoreOS.src.services.inbox.processPendingInbox` | `src/services/inbox.ts` | Batch con mutex módulo |
+| `CoreOS.src.services.inbox.processPendingInbox` | `src/services/inbox.ts` | Batch con mutex módulo; `outcomes` acumulados por inboxId |
 | `CoreOS.src.stores.notes.useNotesStore` | `src/stores/notes.ts` | Store Zustand notas |
 | `CoreOS.src.stores.tags.useTagsStore` | `src/stores/tags.ts` | Store Zustand tags |
 | `CoreOS.src.stores.ui.useUiStore` | `src/stores/ui.ts` | Store UI |
@@ -490,6 +498,7 @@ Qualified names para `codebase-memory` (`codebase-memory_search_graph`,
 | `CoreOS.src.constants.theme.Colors` | `src/constants/theme.ts` | Tokens tema |
 | `CoreOS.src.lib.animations.animations` | `src/lib/animations.ts` | Presets Reanimated + haptics |
 | `CoreOS.src.lib.note-save-gate` | `src/lib/note-save-gate.ts` | Guard de guardado del editor |
+| `CoreOS.src.lib.capture-feedback.trackCaptureOutcome` | `src/lib/capture-feedback.ts` | Toast de destino atribuible a una captura |
 
 ---
 

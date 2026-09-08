@@ -24,7 +24,7 @@ import { processInboxText, type RouteType } from './llm';
 
 export type ProcessResult =
   | { skipped: true;  reason: 'not_found' | 'not_pending' }
-  | { skipped: false; routeType: RouteType; inboxId: number }
+  | { skipped: false; routeType: RouteType; inboxId: number; targetIds: number[] }
   | {
       skipped: false;
       error: string;
@@ -33,10 +33,19 @@ export type ProcessResult =
       inboxId: number;
     };
 
+// Resultado atribuible a UNA captura: el inboxId de origen y los rowids
+// insertados por dispatchRoutedResult (nota → notes.id, tarea → tareas.id, …).
+export type CaptureOutcome = {
+  inboxId: number;
+  routeType: RouteType;
+  targetIds: number[];
+};
+
 export type BatchResult = {
   processed: number;
   failed: number;
   skipped: number;
+  outcomes: CaptureOutcome[];
   errors: { inboxId: number; error: string; errorCode: InboxErrorCode }[];
 };
 
@@ -176,6 +185,7 @@ async function processInboxItemInternal(id: number): Promise<ProcessResult> {
   // 4. transacción con lock optimista (D12, I2)
   try {
     let claimed = false;
+    let targetIds: number[] = [];
     await db.withTransactionAsync(async () => {
       // ponytail: helper existente no lleva WHERE status='pending', inline necesario
       const result = await db.runAsync(
@@ -193,12 +203,12 @@ async function processInboxItemInternal(id: number): Promise<ProcessResult> {
       // nunca withTransactionAsync. Como getDb() retorna singleton, las queries
       // internas de dispatchRoutedResult corren en la misma conexión → misma tx.
       // V1: raw_text viaja como argumento; para 'nota' es el cuerpo íntegro.
-      await dispatchRoutedResult(routed.type, routed.content as Record<string, unknown>, item.raw_text);
+      targetIds = await dispatchRoutedResult(routed.type, routed.content as Record<string, unknown>, item.raw_text);
     });
 
     // Una edición concurrente conserva la captura editada y descarta esta respuesta antigua.
     if (!claimed) return { skipped: true, reason: 'not_pending' };
-    return { skipped: false, routeType: routed.type, inboxId: id };
+    return { skipped: false, routeType: routed.type, inboxId: id, targetIds };
   } catch (error) {
     return failedResult(db, item, diagnose(error, 'dispatch'));
   }
@@ -221,7 +231,11 @@ export async function processInboxItem(id: number): Promise<ProcessResult> {
   }
 }
 
-// D13: mutex a nivel de módulo — evita batches concurrentes (callers reciben la misma promesa)
+// D13: mutex a nivel de módulo — evita batches concurrentes. El valor de
+// `_batchInFlight` es la promesa del DRENAJE COMPLETO: los callers que llegan
+// a mitad de vuelo reciben el resultado acumulado de todas las pasadas
+// (incluida la suya), no solo la primera. Así el feedback es atribuible por
+// inboxId y nunca se inventa desde totales.
 let _batchInFlight: Promise<BatchResult> | null = null;
 // Si un caller llega con el batch en vuelo, su insert es posterior a la lista
 // que el batch ya leyó: se marca retry y el owner da otra pasada al terminar.
@@ -285,29 +299,48 @@ export function triggerAutomaticInboxProcessing(options: { force?: boolean } = {
 }
 
 export async function processPendingInbox(options: { force?: boolean } = {}): Promise<BatchResult> {
-  // Si ya hay un batch en vuelo, unirse y pedir pasada extra para el trabajo nuevo
+  // Unirse al drenaje en vuelo y pedir pasada extra para el trabajo nuevo
+  // (el insert propio es posterior a la lista que la pasada en curso ya leyó).
   if (_batchInFlight) {
     _retryRequested = true;
     _forceRetryRequested ||= options.force === true;
     return await _batchInFlight;
   }
 
-  _batchInFlight = doProcess(options.force === true);
+  const total: BatchResult = { processed: 0, failed: 0, skipped: 0, outcomes: [], errors: [] };
+  let settle!: (result: BatchResult) => void;
+  _batchInFlight = new Promise<BatchResult>((resolve) => {
+    settle = resolve;
+  });
+
   try {
-    let result = await _batchInFlight;
-    // Capturas nuevas mientras volábamos: pasar hasta drenar
-    while (_retryRequested) {
+    let force = options.force === true;
+    for (;;) {
       _retryRequested = false;
-      const force = _forceRetryRequested;
       _forceRetryRequested = false;
-      _batchInFlight = doProcess(force);
-      result = await _batchInFlight;
+      const pass = await doProcess(force);
+      // Misma referencia `total` para todos los joiners: fusionar es síncrono.
+      total.processed += pass.processed;
+      total.failed += pass.failed;
+      total.skipped += pass.skipped;
+      total.outcomes.push(...pass.outcomes);
+      total.errors.push(...pass.errors);
+      force = _forceRetryRequested;
+      if (!_retryRequested && !_forceRetryRequested) break;
     }
-    return result;
-  } finally {
-    _batchInFlight = null;
-    void scheduleAutomaticRetry();
+  } catch (error) {
+    // I4 protege el pipeline; este catch cubre rechazos inesperados de doProcess.
+    console.warn('[inbox] batch drain aborted', {
+      detail: error instanceof Error ? error.name : typeof error,
+    });
   }
+
+  // Resolver y liberar el mutex en el mismo tick: un caller que llegue a
+  // partir de aquí inicia un drenaje nuevo en vez de unirse a uno ya cerrado.
+  settle(total);
+  _batchInFlight = null;
+  void scheduleAutomaticRetry();
+  return total;
 
   async function doProcess(force: boolean): Promise<BatchResult> {
     let items: InboxRow[];
@@ -323,6 +356,7 @@ export async function processPendingInbox(options: { force?: boolean } = {}): Pr
         processed: 0,
         failed: 1,
         skipped: 0,
+        outcomes: [],
         errors: [{
           inboxId: -1,
           error: getInboxErrorMessage(diagnosis.code),
@@ -331,7 +365,7 @@ export async function processPendingInbox(options: { force?: boolean } = {}): Pr
       };
     }
 
-    const result: BatchResult = { processed: 0, failed: 0, skipped: 0, errors: [] };
+    const result: BatchResult = { processed: 0, failed: 0, skipped: 0, outcomes: [], errors: [] };
 
     if (items.length === 0) return result;
 
@@ -344,6 +378,7 @@ export async function processPendingInbox(options: { force?: boolean } = {}): Pr
         result.skipped++;
       } else if ('routeType' in r) {
         result.processed++;
+        result.outcomes.push({ inboxId: r.inboxId, routeType: r.routeType, targetIds: r.targetIds });
       } else {
         result.failed++;
         result.errors.push({ inboxId: r.inboxId, error: r.error, errorCode: r.errorCode });

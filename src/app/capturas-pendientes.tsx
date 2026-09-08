@@ -26,6 +26,7 @@ import {
   isInboxErrorRetryable,
 } from '@/services/inbox-diagnostics';
 import { processInboxItem, processPendingInbox } from '@/services/inbox';
+import { notifyClassification } from '@/lib/capture-feedback';
 import { getLLMConfig } from '@/services/llm';
 
 function formatAge(timestamp: number, now: number): string {
@@ -108,11 +109,8 @@ export default function CapturasPendientesScreen() {
     void haptic.tap.light();
     try {
       const result = await processInboxItem(id);
-      if (!result.skipped && 'routeType' in result) {
-        Toast.show({ type: 'success', text1: 'Captura clasificada' });
-      } else if (!result.skipped) {
-        Toast.show({ type: 'error', text1: 'No se pudo procesar', text2: result.error });
-      }
+      // Mensaje atribuible a ESTA captura, con «Abrir» si hay pantalla.
+      notifyClassification(result);
     } finally {
       await reload();
       setRetryingId(null);

@@ -202,6 +202,7 @@ describe('pipeline de inbox', () => {
       skipped: false,
       routeType: 'tarea',
       inboxId: row.id,
+      targetIds: [99],
     });
     expect(mockDispatchRoutedResult).toHaveBeenCalledWith(
       'tarea',
@@ -473,6 +474,57 @@ describe('pipeline de inbox', () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
     expect(rows.every((row) => row.status === 'processed')).toBe(true);
   });
+  test('une un batch en vuelo y atribuye cada outcome a su propia captura', async () => {
+    const rows: MutableInboxRow[] = [pendingRow(20, 'Primera captura', 9)];
+    useFakeDb(rows);
+    let releaseFirst!: () => void;
+    const firstInFlight = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let startedFirst!: () => void;
+    const fetchStarted = new Promise<void>((resolve) => {
+      startedFirst = resolve;
+    });
+    mockFetch.mockImplementation(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as {
+        messages: { content: string }[];
+      };
+      if (body.messages[1].content === 'Primera captura') {
+        startedFirst();
+        await firstInFlight;
+        return llmResponse(JSON.stringify({
+          type: 'tarea',
+          content: { title: 'Tarea A', due_date: null, priority: null },
+        }));
+      }
+      return llmResponse(JSON.stringify({
+        type: 'nota',
+        content: { title: 'Nota B', tags: [] },
+      }));
+    });
+    mockDispatchRoutedResult.mockImplementation(async (type) =>
+      type === 'tarea' ? [200] : [300],
+    );
+
+    const first = processPendingInbox();
+    await fetchStarted; // la pasada 1 está en vuelo con el mutex adquirido
+
+    // La captura B entra con el batch en vuelo: se une al drenaje y pide
+    // pasada extra; su resultado NO puede inferirse de los totales de A.
+    rows.push(pendingRow(21, 'Segunda captura', 10));
+    const second = processPendingInbox();
+
+    releaseFirst();
+    const [resultFirst, resultSecond] = await Promise.all([first, second]);
+
+    // Ambos callers reciben el mismo resultado acumulado del drenaje.
+    expect(resultSecond).toBe(resultFirst);
+    expect(resultFirst.outcomes).toEqual([
+      { inboxId: 20, routeType: 'tarea', targetIds: [200] },
+      { inboxId: 21, routeType: 'nota', targetIds: [300] },
+    ]);
+  });
+
   test('agrupa disparadores de lifecycle en un único batch', async () => {
     const row = pendingRow(19, 'Captura tras recuperar conexión', 8);
     useFakeDb([row]);

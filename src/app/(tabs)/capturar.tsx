@@ -11,11 +11,11 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import Toast from 'react-native-toast-message';
 
 import { NoteSpacing, Radii, Typography } from '@/constants/theme';
 import { useCaptureDraft } from '@/hooks/use-capture-draft';
 import { useTheme } from '@/hooks/use-theme';
+import { notifyCapturePersisted, trackCaptureOutcome } from '@/lib/capture-feedback';
 import { haptic } from '@/lib/animations';
 import { captureInbox } from '@/services/capture';
 
@@ -36,31 +36,17 @@ export default function CapturarScreen() {
     setError(null);
     try {
       // Persistir antes de pensar: la captura queda a salvo en inbox primero.
-      const { processing } = await captureInbox(trimmed);
+      const { inboxId, processing } = await captureInbox(trimmed);
       // insertInbox confirmó persistencia: único punto donde el borrador se
       // borra. Si el guardado falla (catch), texto y borrador se mantienen.
       discardDraft();
       void haptic.notify.success();
-      Toast.show({
-        type: 'success',
-        text1: 'Captura guardada',
-        text2: 'Clasificando con IA…',
-        visibilityTime: 2500,
-      });
-      // Fire-and-forget con confirmación: I4 garantiza que nunca lanza.
-      // El mutex de inbox.ts asegura pasada extra si otro batch volaba.
-      // No afirmamos éxito por inbox: el batch procesa capturas de otros
-      // triggers y los conteos no son atribuibles a esta captura.
-      void processing.then((result) => {
-        if (result.processed === 0 && result.failed > 0) {
-          Toast.show({
-            type: 'error',
-            text1: 'Sin clasificar',
-            text2: 'La IA no respondió; se reintentará',
-            visibilityTime: 3000,
-          });
-        }
-      });
+      // Solo persistencia confirmada — nada de «Clasificando…» antes de tiempo.
+      notifyCapturePersisted();
+      // Feedback ASOCIADO A ESTA CAPTURA (inboxId): el batch puede procesar
+      // capturas de otros triggers; los totales no son atribuibles.
+      // I4: processing nunca rechaza.
+      trackCaptureOutcome(processing, inboxId);
     } catch (err) {
       void haptic.notify.error();
       setError(err instanceof Error ? err.message : 'No se pudo guardar la captura');
