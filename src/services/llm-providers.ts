@@ -3,6 +3,8 @@ import * as WebBrowser from 'expo-web-browser';
 import * as Linking from 'expo-linking';
 import { Platform } from 'react-native';
 
+import { InboxPipelineError } from './inbox-diagnostics';
+
 WebBrowser.maybeCompleteAuthSession();
 
 export type ProviderId = 'minimax' | 'openai' | 'openrouter' | 'custom' | 'anthropic' | 'gemini';
@@ -491,7 +493,7 @@ export interface ActiveLLMConfig {
 
 export async function getActiveLLMConfig(): Promise<ActiveLLMConfig> {
   if (Platform.OS === 'web') {
-    throw new Error('SecureStore no está disponible en web. Configura el proveedor de IA desde un dispositivo nativo.');
+    throw new InboxPipelineError('not_configured', 'secure_store_unavailable');
   }
 
   await migrateLegacyConfigIfNeeded();
@@ -504,24 +506,22 @@ export async function getActiveLLMConfig(): Promise<ActiveLLMConfig> {
   if (providerId === 'openai' && authMethod === 'chatgpt-codex') {
     const codexCheck = checkCodexPlatformSupport();
     if (!codexCheck.supported) {
-      throw new Error(
-        `ChatGPT / Codex no está disponible en esta plataforma (${Platform.OS}). Configura una API Key de OpenAI o utiliza el proveedor Personalizado.`,
-      );
+      throw new InboxPipelineError('not_configured', 'codex_unsupported');
     }
   }
 
   if (!stored.apiKey.trim()) {
-    throw new Error(`API Key no configurada para ${provider.name}. Ve a Ajustes y configura tu proveedor.`);
+    throw new InboxPipelineError('not_configured', 'api_key_missing');
   }
 
   const baseUrl = stored.baseUrl.trim();
   if (provider.requiresCustomBaseUrl && !baseUrl) {
-    throw new Error(`Base URL no configurada para el proveedor ${provider.name}. Ve a Ajustes.`);
+    throw new InboxPipelineError('not_configured', 'base_url_missing');
   }
 
   const model = stored.model.trim() || provider.defaultModel;
   if (!model) {
-    throw new Error(`Modelo no configurado para ${provider.name}. Ve a Ajustes.`);
+    throw new InboxPipelineError('not_configured', 'model_missing');
   }
 
   const defaultHeaders = {

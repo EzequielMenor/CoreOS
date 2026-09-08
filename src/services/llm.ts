@@ -1,6 +1,5 @@
-import {
-  getActiveLLMConfig,
-} from './llm-providers';
+import { getActiveLLMConfig } from './llm-providers';
+import { InboxPipelineError } from './inbox-diagnostics';
 
 export * from './llm-providers';
 
@@ -89,19 +88,28 @@ export async function processInboxText(text: string): Promise<RoutedResult> {
         temperature: 0.2,
       }),
     });
-  } catch (err) {
-    throw new Error(`LLM request failed: ${(err as Error).message}`);
+  } catch {
+    throw new InboxPipelineError('network', 'fetch_failed');
   }
 
   if (!response.ok) {
-    throw new Error(`LLM API error: ${response.status} ${response.statusText}`);
+    if (response.status === 401 || response.status === 403) {
+      throw new InboxPipelineError('authentication', `http_${response.status}`);
+    }
+    if (response.status === 429) {
+      throw new InboxPipelineError('rate_limit', 'http_429');
+    }
+    if (response.status === 408 || response.status >= 500) {
+      throw new InboxPipelineError('network', `http_${response.status}`);
+    }
+    throw new InboxPipelineError('provider_error', `http_${response.status}`);
   }
 
   let body: unknown;
   try {
     body = await response.json();
   } catch {
-    throw new Error('LLM response: fallo al parsear JSON de la respuesta HTTP');
+    throw new InboxPipelineError('invalid_response', 'http_json_invalid');
   }
 
   const bodyObj = body as Record<string, unknown>;
@@ -110,7 +118,7 @@ export async function processInboxText(text: string): Promise<RoutedResult> {
   const contentStr = rawContent?.content;
 
   if (typeof contentStr !== 'string') {
-    throw new Error('LLM response: no se encontró choices[0].message.content');
+    throw new InboxPipelineError('invalid_response', 'content_missing');
   }
 
   let cleanResponse = contentStr;
@@ -126,7 +134,7 @@ export async function processInboxText(text: string): Promise<RoutedResult> {
   try {
     parsed = JSON.parse(cleanResponse) as Record<string, unknown>;
   } catch {
-    throw new Error('LLM: JSON inválido del modelo');
+    throw new InboxPipelineError('invalid_response', 'model_json_invalid');
   }
 
   // Normalización defensiva del type: el modelo a veces responde mayúsculas,
@@ -140,7 +148,7 @@ export async function processInboxText(text: string): Promise<RoutedResult> {
   const type = rawType.trim().toLowerCase();
 
   if (!['nota', 'gasto', 'tarea', 'habito', 'sueno'].includes(type)) {
-    throw new Error(`LLM: type inválido "${rawType}"`);
+    throw new InboxPipelineError('invalid_response', 'route_type_invalid');
   }
 
   if (type === 'nota') {
@@ -160,29 +168,29 @@ export async function processInboxText(text: string): Promise<RoutedResult> {
   }
 
   if (!parsed.content || typeof parsed.content !== 'object') {
-    throw new Error(`LLM: type "${type}" sin content válido`);
+    throw new InboxPipelineError('invalid_response', 'route_content_invalid');
   }
 
   const content = parsed.content as Record<string, unknown>;
   switch (type) {
     case 'gasto':
       if (typeof content.amount !== 'number') {
-        throw new Error('LLM: gasto sin amount numérico');
+        throw new InboxPipelineError('invalid_response', 'gasto_amount_invalid');
       }
       break;
     case 'tarea':
       if (typeof content.title !== 'string' || content.title.trim().length === 0) {
-        throw new Error('LLM: tarea sin title válido');
+        throw new InboxPipelineError('invalid_response', 'tarea_title_invalid');
       }
       break;
     case 'habito':
       if (typeof content.habit_name !== 'string' || content.habit_name.trim().length === 0) {
-        throw new Error('LLM: habito sin habit_name válido');
+        throw new InboxPipelineError('invalid_response', 'habito_name_invalid');
       }
       break;
     case 'sueno':
       if (typeof content.hours !== 'number') {
-        throw new Error('LLM: sueno sin hours numérico');
+        throw new InboxPipelineError('invalid_response', 'sueno_hours_invalid');
       }
       break;
   }

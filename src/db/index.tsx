@@ -1,6 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 import { File } from 'expo-file-system';
 import { RouteType } from '../services/llm';
+import type { InboxErrorCode } from '../services/inbox-diagnostics';
 import { setTagsForNoteNoTx } from './queries/tags';
 
 import { getDb, closeDb, DB_NAME, DB_DIR } from './client';
@@ -11,6 +12,16 @@ export interface InboxRow {
   raw_text: string;
   created_at: number;
   status: 'pending' | 'processed' | 'archived';
+  error_code: InboxErrorCode | null;
+  last_attempt_at: number | null;
+  attempt_count: number;
+  next_retry_at: number | null;
+}
+
+export interface PendingInboxSummary {
+  total: number;
+  failed: number;
+  latest_error_code: InboxErrorCode | null;
 }
 
 export interface NoteRow {
@@ -466,6 +477,40 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
     });
   }
 
+  // Diagnóstico seguro del inbox. El guard por columnas permite recuperar una
+  // migración parcial sin tocar ni duplicar capturas existentes.
+  const inboxCols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(inbox)');
+  const existingInboxCols = new Set(inboxCols.map((column) => column.name));
+  const inboxDiagnosticColumns = [
+    ['error_code', 'error_code TEXT'],
+    ['last_attempt_at', 'last_attempt_at INTEGER'],
+    ['attempt_count', 'attempt_count INTEGER NOT NULL DEFAULT 0'],
+    ['next_retry_at', 'next_retry_at INTEGER'],
+  ] as const;
+  const inboxDiagnosticsDone = await db.getFirstAsync<{ value: string | null }>(
+    "SELECT value FROM schema_meta WHERE key='inbox_diagnostics_v1'",
+  );
+  const haveInboxDiagnostics = inboxDiagnosticColumns.every(([name]) => (
+    existingInboxCols.has(name)
+  ));
+  if (!inboxDiagnosticsDone?.value || !haveInboxDiagnostics) {
+    await db.withTransactionAsync(async () => {
+      for (const [name, ddl] of inboxDiagnosticColumns) {
+        if (!existingInboxCols.has(name)) {
+          await db.execAsync(`ALTER TABLE inbox ADD COLUMN ${ddl};`);
+          existingInboxCols.add(name);
+        }
+      }
+      await db.execAsync(`
+        CREATE INDEX IF NOT EXISTS idx_inbox_retry
+          ON inbox(status, next_retry_at, created_at);
+      `);
+      await db.runAsync(
+        "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('inbox_diagnostics_v1', '1')",
+      );
+    });
+  }
+
   // Backfill: re-sincroniza tags JSON legacy → note_tags para notas
   // creadas antes de que dispatchRoutedResult escribiera a note_tags.
   // Idempotente por key 'tags_dispatch_backfill_v1'. Nunca aborta el
@@ -511,7 +556,11 @@ export async function initDb(): Promise<void> {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       raw_text TEXT NOT NULL,
       created_at INTEGER NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending'
+      status TEXT NOT NULL DEFAULT 'pending',
+      error_code TEXT,
+      last_attempt_at INTEGER,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      next_retry_at INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS notes (
@@ -588,9 +637,28 @@ export async function updateInboxStatus(id: number, status: InboxRow['status']):
   await db.runAsync('UPDATE inbox SET status = ? WHERE id = ?', status, id);
 }
 
-export async function deleteInboxItem(id: number): Promise<void> {
+export async function deleteInboxItem(id: number): Promise<boolean> {
   const db = await getDb();
-  await db.runAsync('DELETE FROM inbox WHERE id = ?', id);
+  const result = await db.runAsync(
+    "DELETE FROM inbox WHERE id = ? AND status = 'pending'",
+    id,
+  );
+  return result.changes > 0;
+}
+
+export async function updatePendingInboxText(id: number, rawText: string): Promise<boolean> {
+  const normalizedText = rawText.trim();
+  if (!normalizedText) return false;
+  const db = await getDb();
+  const result = await db.runAsync(
+    `UPDATE inbox
+      SET raw_text=?, error_code=NULL, last_attempt_at=NULL,
+          attempt_count=0, next_retry_at=NULL
+      WHERE id=? AND status='pending'`,
+    normalizedText,
+    id,
+  );
+  return result.changes > 0;
 }
 
 export async function insertInbox(raw_text: string): Promise<number> {
@@ -604,11 +672,46 @@ export async function insertInbox(raw_text: string): Promise<number> {
   return result.lastInsertRowId;
 }
 
-export async function getPendingInbox(): Promise<InboxRow[]> {
+export async function getPendingInbox(force = false): Promise<InboxRow[]> {
   const db = await getDb();
   return db.getAllAsync<InboxRow>(
-    "SELECT * FROM inbox WHERE status = 'pending' ORDER BY created_at DESC",
+    `SELECT * FROM inbox
+      WHERE status = 'pending'
+        AND (? = 1 OR attempt_count = 0 OR (next_retry_at IS NOT NULL AND next_retry_at <= ?))
+      ORDER BY created_at ASC`,
+    force ? 1 : 0,
+    Date.now(),
   );
+}
+
+export async function getNextPendingInboxRetryAt(): Promise<number | null> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<{ next_retry_at: number | null }>(
+    `SELECT MIN(next_retry_at) AS next_retry_at
+       FROM inbox
+      WHERE status = 'pending'
+        AND next_retry_at IS NOT NULL`,
+  );
+  return row?.next_retry_at ?? null;
+}
+
+export async function getPendingInboxSummary(): Promise<PendingInboxSummary> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<PendingInboxSummary>(`
+    SELECT
+      COUNT(*) AS total,
+      COALESCE(SUM(CASE WHEN error_code IS NOT NULL THEN 1 ELSE 0 END), 0) AS failed,
+      (
+        SELECT error_code
+        FROM inbox AS latest
+        WHERE latest.status = 'pending' AND latest.error_code IS NOT NULL
+        ORDER BY COALESCE(latest.last_attempt_at, latest.created_at) DESC
+        LIMIT 1
+      ) AS latest_error_code
+    FROM inbox
+    WHERE status = 'pending'
+  `);
+  return row ?? { total: 0, failed: 0, latest_error_code: null };
 }
 
 export async function countPendingInbox(): Promise<number> {

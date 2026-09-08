@@ -1,16 +1,17 @@
 import { DarkTheme, DefaultTheme, ThemeProvider, Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect, useMemo, useState } from 'react';
-import { AppState, StyleSheet, Text, View, useColorScheme, type AppStateStatus } from 'react-native';
+import { AppState, Pressable, StyleSheet, Text, View, useColorScheme, type AppStateStatus } from 'react-native';
+import * as Network from 'expo-network';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
 import * as Linking from 'expo-linking';
-
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { initDb } from '@/db';
 import { captureInbox } from '@/services/capture';
-import { processPendingInbox } from '@/services/inbox';
+import { notifyCapturePersisted, trackCaptureOutcome } from '@/lib/capture-feedback';
+import { triggerAutomaticInboxProcessing } from '@/services/inbox';
 import { useNotesStore } from '@/stores/notes';
 import { useTagsStore } from '@/stores/tags';
 
@@ -39,9 +40,10 @@ export default function TabLayout() {
         setDbReady(true);
         useNotesStore.getState().fetchSections().catch(notifyError('Notes'));
         useTagsStore.getState().fetchTags().catch(notifyError('Tags'));
-        // Disparo fire-and-forget: drena capturas pendientes del run anterior.
-        // I4: processPendingInbox nunca lanza.
-        void processPendingInbox();
+        // Disparo fire-and-forget: drena capturas del run anterior y programa
+        // el siguiente intento según el backoff persistido.
+        // I4: el pipeline nunca lanza.
+        void triggerAutomaticInboxProcessing();
       })
       .catch((e) => {
         // initDb falló: NO reset, NO re-init, NO render de la app normal.
@@ -64,27 +66,40 @@ export default function TabLayout() {
       const text = parsed.queryParams?.text;
       if (typeof text === 'string' && text.trim().length > 0) {
         captureInbox(text.trim())
-          .then(() => {
-            Toast.show({ type: 'success', text1: 'Captura recibida' });
+          .then(({ inboxId, processing }) => {
+            // Solo persistencia; el destino llega al terminar el batch.
+            notifyCapturePersisted();
+            trackCaptureOutcome(processing, inboxId);
           })
           .catch(notifyError('Inbox DeepLink'));
       }
     }
   }, [url, dbReady]);
 
-  // AppState 'active': drena el inbox cuando el usuario vuelve a foreground.
-  // El mutex _batchInFlight cubre concurrencia con el resto de triggers.
+  // AppState y conectividad solo disparan el pipeline cuando la app está lista.
+  // El scheduler y el mutex absorben eventos repetidos sin bloquear navegación.
   useEffect(() => {
-    const handler = (status: AppStateStatus) => {
-      if (status === 'active') {
-        void processPendingInbox();
-      }
+    if (!dbReady) return;
+
+    let lastNetworkAvailable: boolean | null = null;
+    const requestProcessing = () => {
+      void triggerAutomaticInboxProcessing();
     };
-    const sub = AppState.addEventListener('change', handler);
+    const appStateSubscription = AppState.addEventListener('change', (status: AppStateStatus) => {
+      if (status === 'active') requestProcessing();
+    });
+    const networkSubscription = Network.addNetworkStateListener((state) => {
+      const available = state.isInternetReachable ?? state.isConnected ?? false;
+      const recovered = lastNetworkAvailable === false && available;
+      lastNetworkAvailable = available;
+      if (recovered) requestProcessing();
+    });
+
     return () => {
-      sub.remove();
+      appStateSubscription.remove();
+      networkSubscription.remove();
     };
-  }, []);
+  }, [dbReady]);
 
   // ponytail: useMemo debe estar ANTES del early return (Rules of Hooks).
   const toastConfig = useMemo(() => ({
@@ -119,6 +134,28 @@ export default function TabLayout() {
           <Text style={[styles.customToastTitle, { color: themeColors.notes.text.primary }]}>{props.text1}</Text>
           {props.text2 ? <Text style={[styles.customToastSubtitle, { color: themeColors.notes.text.secondary }]}>{props.text2}</Text> : null}
         </View>
+      </View>
+    ),
+    // Toast de resultado con acción «Abrir» (capturas clasificadas). La lib
+    // reenvía `props` de Toast.show({ props }) al componente de la config.
+    successAction: ({ text1, props }: { text1?: string; text2?: string; props?: { actionLabel?: string; onAction?: () => void } }) => (
+      <View style={[styles.customToast, { backgroundColor: themeColors.notes.bg.elevated, borderColor: themeColors.notes.border.subtle }]}>
+        <View style={[styles.iconWrap, { backgroundColor: themeColors.notes.semantic.success + '20' }]}>
+          <Text style={{ fontSize: 16 }}>✨</Text>
+        </View>
+        <View style={styles.textWrap}>
+          <Text style={[styles.customToastTitle, { color: themeColors.notes.text.primary }]}>{text1}</Text>
+        </View>
+        {props?.onAction ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={props.actionLabel ?? 'Abrir'}
+            onPress={props.onAction}
+            hitSlop={8}
+            style={({ pressed }) => [styles.toastAction, { opacity: pressed ? 0.6 : 1 }]}>
+            <Text style={[styles.toastActionText, { color: themeColors.notes.accent.primary }]}>{props.actionLabel ?? 'Abrir'}</Text>
+          </Pressable>
+        ) : null}
       </View>
     ),
   }), [themeColors]);
@@ -159,6 +196,7 @@ export default function TabLayout() {
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="tareas" options={{ ...secondaryHeaderOptions, title: 'Tareas' }} />
             <Stack.Screen name="ajustes" options={{ ...secondaryHeaderOptions, title: 'Ajustes' }} />
+            <Stack.Screen name="capturas-pendientes" options={{ ...secondaryHeaderOptions, title: 'Capturas pendientes' }} />
           </Stack>
           {/* ponytail: topOffset hardcoded (notch iPhone 14-16 ≈ 47pt + 8pt padding). Las screens que necesiten más espacio usan useSafeAreaInsets(). */}
           <Toast config={toastConfig} topOffset={55} />
@@ -225,5 +263,14 @@ const styles = StyleSheet.create({
   customToastSubtitle: {
     fontSize: 13,
     marginTop: 2,
+  },
+  toastAction: {
+    marginLeft: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  toastActionText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

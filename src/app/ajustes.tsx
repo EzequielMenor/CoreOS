@@ -34,6 +34,7 @@ import {
   type SupportedProviderId,
   validateProviderConnection,
 } from '@/services/llm-providers';
+import { triggerAutomaticInboxProcessing } from '@/services/inbox';
 
 export default function AjustesScreen() {
   const theme = useTheme();
@@ -213,6 +214,10 @@ export default function AjustesScreen() {
       setActiveApiKey(apiKey.trim());
       setActiveBaseUrl(baseUrl.trim());
       setIsCurrentConfigured(true);
+
+      // Reintento fire-and-forget de capturas pendientes tras un guardado válido.
+      // No bloquea ni la navegación ni el guardado: el mutex del inbox absorbe la pasada.
+      void triggerAutomaticInboxProcessing({ force: true });
 
       Alert.alert(
         'Conexión exitosa',

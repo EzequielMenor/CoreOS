@@ -10,7 +10,9 @@ import {
 
 import { ThemedText } from '@/components/themed-text';
 import { useTheme } from '@/hooks/use-theme';
+import { notifyCapturePersisted, trackCaptureOutcome } from '@/lib/capture-feedback';
 import { captureInbox } from '@/services/capture';
+import type { BatchResult } from '@/services/inbox';
 
 // Extracción texto/URL del payload raw. El payload raw llega como
 // { value: string, mimeType: string } (string compartido). Las websites llegan
@@ -29,7 +31,7 @@ export default function CaptureShareScreen() {
     if (started.current) return; // AC-5: re-entry limpio
     started.current = true;
     (async () => {
-      let inserted = 0;
+      const captured: { inboxId: number; processing: Promise<BatchResult> }[] = [];
       const seen = new Set<string>(); // dedupe intra-batch
       try {
         const payloads = await getSharedPayloads(); // offline-safe
@@ -37,19 +39,31 @@ export default function CaptureShareScreen() {
           const text = extractText(p);
           if (!text || seen.has(text)) continue;
           seen.add(text);
-          await captureInbox(text); // Persiste antes de iniciar la clasificación.
-          inserted++;
+          // Persiste antes de iniciar la clasificación.
+          const { inboxId, processing } = await captureInbox(text);
+          captured.push({ inboxId, processing });
         }
         await clearSharedPayloads(); // evita re-disparo al relanzar app
       } catch {
         // I1–I4: nunca propagamos error al usuario; fallback graceful.
       }
-      Toast.show({
-        type: inserted > 0 ? 'success' : 'info',
-        text1: inserted > 0 ? 'Captura enviada al Inbox' : 'Nada que capturar',
-        text2: 'Clasificando con IA…',
-        visibilityTime: 3000,
-      });
+      if (captured.length > 0) {
+        // Solo persistencia: NADA de «Clasificando…» antes de conocer el
+        // resultado. Cada captura confirma su destino por inboxId cuando el
+        // batch termina (los toasts viven en el root → sobreviven al replace).
+        notifyCapturePersisted(captured.length);
+        // ponytail: batch compartido = outcomes casi simultáneos; el toast
+        // más reciente gana. Un payload por share es el caso normal.
+        for (const { inboxId, processing } of captured) {
+          trackCaptureOutcome(processing, inboxId);
+        }
+      } else {
+        Toast.show({
+          type: 'info',
+          text1: 'Nada que capturar',
+          visibilityTime: 2000,
+        });
+      }
       // espera breve al toast antes de replace (evita unmount de toast)
       setTimeout(() => router.replace('/'), 350);
     })();
