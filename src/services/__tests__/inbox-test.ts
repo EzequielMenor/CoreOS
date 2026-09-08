@@ -3,17 +3,18 @@ import * as SecureStore from 'expo-secure-store';
 import {
   dispatchRoutedResult,
   getDb,
+  getNextPendingInboxRetryAt,
   getPendingInbox,
   insertInbox,
   type InboxRow,
 } from '@/db';
-
 import { captureInbox } from '../capture';
-import { processInboxItem, processPendingInbox } from '../inbox';
+import { processInboxItem, processPendingInbox, triggerAutomaticInboxProcessing } from '../inbox';
 
 jest.mock('@/db', () => ({
   dispatchRoutedResult: jest.fn(),
   getDb: jest.fn(),
+  getNextPendingInboxRetryAt: jest.fn(),
   getPendingInbox: jest.fn(),
   insertInbox: jest.fn(),
 }));
@@ -23,11 +24,12 @@ jest.mock('expo-secure-store', () => ({
 }));
 
 const mockGetPendingInbox = jest.mocked(getPendingInbox);
+const mockGetNextPendingInboxRetryAt = jest.mocked(getNextPendingInboxRetryAt);
 const mockGetDb = jest.mocked(getDb);
 const mockInsertInbox = jest.mocked(insertInbox);
 const mockDispatchRoutedResult = jest.mocked(dispatchRoutedResult);
-const mockGetSecureItem = jest.mocked(SecureStore.getItemAsync);
 const mockFetch = jest.fn();
+const mockGetSecureItem = jest.mocked(SecureStore.getItemAsync);
 
 type MutableInboxRow = Omit<InboxRow, 'status'> & { status: InboxRow['status'] };
 
@@ -64,9 +66,10 @@ function pendingRow(id: number, rawText: string, createdAt: number): MutableInbo
 
 function useFakeDb(rows: MutableInboxRow[]) {
   const db = {
-    getFirstAsync: jest.fn(async (_query: string, id: number) => (
-      rows.find((row) => row.id === id) ?? null
-    )),
+    getFirstAsync: jest.fn(async (_query: string, id: number) => {
+      const row = rows.find((candidate) => candidate.id === id);
+      return row ? { ...row } : null;
+    }),
     runAsync: jest.fn(
       async (query: string, ...args: unknown[]) => {
         if (query.includes('SET error_code')) {
@@ -88,14 +91,15 @@ function useFakeDb(rows: MutableInboxRow[]) {
           return { changes: 1, lastInsertRowId: 0 };
         }
 
-        const [nextStatus, lastAttemptAt, id, expectedStatus] = args as [
+        const [nextStatus, lastAttemptAt, id, expectedStatus, expectedRawText] = args as [
           InboxRow['status'],
           number,
           number,
           InboxRow['status'],
+          string,
         ];
         const row = rows.find((candidate) => candidate.id === id);
-        if (!row || row.status !== expectedStatus) {
+        if (!row || row.status !== expectedStatus || row.raw_text !== expectedRawText) {
           return { changes: 0, lastInsertRowId: 0 };
         }
         row.status = nextStatus;
@@ -129,6 +133,7 @@ function useFakeDb(rows: MutableInboxRow[]) {
 describe('pipeline de inbox', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockGetNextPendingInboxRetryAt.mockResolvedValue(null);
     mockGetSecureItem.mockImplementation(async (key) => (
       key === 'llm.apiKey' ? 'test-api-key' : null
     ));
@@ -201,6 +206,24 @@ describe('pipeline de inbox', () => {
     expect(row.status).toBe('processed');
     expect(row.attempt_count).toBe(1);
     expect(row.error_code).toBeNull();
+  });
+
+  test('no despacha una respuesta antigua si la captura se edita durante el reintento', async () => {
+    const row = pendingRow(16, 'Texto antiguo', 16);
+    useFakeDb([row]);
+    mockFetch.mockImplementation(async () => {
+      row.raw_text = 'Texto editado';
+      return llmResponse(JSON.stringify({
+        type: 'tarea',
+        content: { title: 'No debe guardarse', due_date: null, priority: null },
+      }));
+    });
+
+    const result = await processInboxItem(row.id);
+
+    expect(result).toEqual({ skipped: true, reason: 'not_pending' });
+    expect(mockDispatchRoutedResult).not.toHaveBeenCalled();
+    expect(row).toMatchObject({ status: 'pending', raw_text: 'Texto editado', attempt_count: 0 });
   });
 
   test('bloquea el reintento automático y conserva raw_text ante una respuesta inválida', async () => {
@@ -413,5 +436,53 @@ describe('pipeline de inbox', () => {
     expect(dispatchedRawTexts).toEqual(['Primera captura', 'Segunda captura']);
     expect(mockFetch).toHaveBeenCalledTimes(2);
     expect(rows.every((row) => row.status === 'processed')).toBe(true);
+  });
+
+  test('serializa reintentos individuales concurrentes', async () => {
+    const rows: MutableInboxRow[] = [
+      pendingRow(17, 'Reintento uno', 6),
+      pendingRow(18, 'Reintento dos', 7),
+    ];
+    useFakeDb(rows);
+    let activeRequests = 0;
+    let maxActiveRequests = 0;
+    mockFetch.mockImplementation(async () => {
+      activeRequests++;
+      maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      activeRequests--;
+      return llmResponse(JSON.stringify({
+        type: 'tarea',
+        content: { title: 'Tarea clasificada', due_date: null, priority: null },
+      }));
+    });
+    mockDispatchRoutedResult.mockResolvedValue([101]);
+
+    await Promise.all([processInboxItem(17), processInboxItem(18)]);
+
+    expect(maxActiveRequests).toBe(1);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(rows.every((row) => row.status === 'processed')).toBe(true);
+  });
+  test('agrupa disparadores de lifecycle en un único batch', async () => {
+    const row = pendingRow(19, 'Captura tras recuperar conexión', 8);
+    useFakeDb([row]);
+    const pendingRead = Promise.withResolvers<InboxRow[]>();
+    mockGetPendingInbox.mockReturnValue(pendingRead.promise);
+    mockFetch.mockResolvedValue(llmResponse(JSON.stringify({
+      type: 'tarea',
+      content: { title: 'Tarea recuperada', due_date: null, priority: null },
+    })));
+    mockDispatchRoutedResult.mockResolvedValue([102]);
+
+    const first = triggerAutomaticInboxProcessing();
+    const second = triggerAutomaticInboxProcessing();
+    expect(second).toBe(first);
+
+    pendingRead.resolve([row]);
+    await first;
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(row.status).toBe('processed');
   });
 });

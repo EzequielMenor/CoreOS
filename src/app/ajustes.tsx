@@ -18,6 +18,7 @@ import * as SecureStore from 'expo-secure-store';
 import { BottomTabInset, NoteSpacing, Radii } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { ButtonBrand } from '@/components/ButtonBrand';
+import { triggerAutomaticInboxProcessing } from '@/services/inbox';
 
 const KEY_BASE_URL = 'llm.baseUrl';
 const KEY_API_KEY = 'llm.apiKey';
@@ -76,6 +77,9 @@ export default function AjustesScreen() {
         SecureStore.setItemAsync(KEY_MODEL, model.trim()),
         SecureStore.setItemAsync('hasOnboarded', 'true'),
       ]);
+      // La validación local ya pasó; reintentar pendientes desbloqueados no
+      // debe bloquear el guardado ni la navegación.
+      void triggerAutomaticInboxProcessing({ force: true });
       Alert.alert('Éxito', 'Configuración guardada correctamente.');
     } catch {
       Alert.alert('Error', 'No se pudo guardar la configuración.');

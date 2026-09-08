@@ -2,6 +2,7 @@ import { DarkTheme, DefaultTheme, ThemeProvider, Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect, useMemo, useState } from 'react';
 import { AppState, StyleSheet, Text, View, useColorScheme, type AppStateStatus } from 'react-native';
+import * as Network from 'expo-network';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
@@ -10,7 +11,7 @@ import * as Linking from 'expo-linking';
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { initDb } from '@/db';
 import { captureInbox } from '@/services/capture';
-import { processPendingInbox } from '@/services/inbox';
+import { triggerAutomaticInboxProcessing } from '@/services/inbox';
 import { useNotesStore } from '@/stores/notes';
 import { useTagsStore } from '@/stores/tags';
 
@@ -39,9 +40,10 @@ export default function TabLayout() {
         setDbReady(true);
         useNotesStore.getState().fetchSections().catch(notifyError('Notes'));
         useTagsStore.getState().fetchTags().catch(notifyError('Tags'));
-        // Disparo fire-and-forget: drena capturas pendientes del run anterior.
-        // I4: processPendingInbox nunca lanza.
-        void processPendingInbox();
+        // Disparo fire-and-forget: drena capturas del run anterior y programa
+        // el siguiente intento según el backoff persistido.
+        // I4: el pipeline nunca lanza.
+        void triggerAutomaticInboxProcessing();
       })
       .catch((e) => {
         // initDb falló: NO reset, NO re-init, NO render de la app normal.
@@ -72,19 +74,30 @@ export default function TabLayout() {
     }
   }, [url, dbReady]);
 
-  // AppState 'active': drena el inbox cuando el usuario vuelve a foreground.
-  // El mutex _batchInFlight cubre concurrencia con el resto de triggers.
+  // AppState y conectividad solo disparan el pipeline cuando la app está lista.
+  // El scheduler y el mutex absorben eventos repetidos sin bloquear navegación.
   useEffect(() => {
-    const handler = (status: AppStateStatus) => {
-      if (status === 'active') {
-        void processPendingInbox();
-      }
+    if (!dbReady) return;
+
+    let lastNetworkAvailable: boolean | null = null;
+    const requestProcessing = () => {
+      void triggerAutomaticInboxProcessing();
     };
-    const sub = AppState.addEventListener('change', handler);
+    const appStateSubscription = AppState.addEventListener('change', (status: AppStateStatus) => {
+      if (status === 'active') requestProcessing();
+    });
+    const networkSubscription = Network.addNetworkStateListener((state) => {
+      const available = state.isInternetReachable ?? state.isConnected ?? false;
+      const recovered = lastNetworkAvailable === false && available;
+      lastNetworkAvailable = available;
+      if (recovered) requestProcessing();
+    });
+
     return () => {
-      sub.remove();
+      appStateSubscription.remove();
+      networkSubscription.remove();
     };
-  }, []);
+  }, [dbReady]);
 
   // ponytail: useMemo debe estar ANTES del early return (Rules of Hooks).
   const toastConfig = useMemo(() => ({
@@ -159,6 +172,7 @@ export default function TabLayout() {
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="tareas" options={{ ...secondaryHeaderOptions, title: 'Tareas' }} />
             <Stack.Screen name="ajustes" options={{ ...secondaryHeaderOptions, title: 'Ajustes' }} />
+            <Stack.Screen name="capturas-pendientes" options={{ ...secondaryHeaderOptions, title: 'Capturas pendientes' }} />
           </Stack>
           {/* ponytail: topOffset hardcoded (notch iPhone 14-16 ≈ 47pt + 8pt padding). Las screens que necesiten más espacio usan useSafeAreaInsets(). */}
           <Toast config={toastConfig} topOffset={55} />

@@ -3,7 +3,6 @@ import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-n
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { SymbolView } from 'expo-symbols';
-import Toast from 'react-native-toast-message';
 
 import { BottomTabInset, IconSize, MaxContentWidth, NoteSpacing, Radii } from '@/constants/theme';
 import { getPendingInboxSummary, type PendingInboxSummary } from '@/db';
@@ -12,7 +11,6 @@ import type { TareaRow } from '@/db/queries/tareas';
 import { useTheme } from '@/hooks/use-theme';
 import { haptic } from '@/lib/animations';
 import { getInboxErrorShortLabel } from '@/services/inbox-diagnostics';
-import { processPendingInbox } from '@/services/inbox';
 import { useTareasStore } from '@/stores/tareas';
 
 import { Cabecera } from '@/components/briefing/Cabecera';
@@ -51,7 +49,6 @@ export default function HomeScreen() {
     failed: 0,
     latest_error_code: null,
   });
-  const [processing, setProcessing] = useState(false);
 
   const greeting = useMemo(() => getGreeting(new Date(now)), [now]);
   const dateLabel = useMemo(() => formatLongDate(new Date(now)), [now]);
@@ -86,32 +83,6 @@ export default function HomeScreen() {
     },
     [reload],
   );
-
-  // Chip accionable: reintenta el pipeline LLM y reporta el resultado.
-  // I4: processPendingInbox nunca lanza.
-  const handleProcessPending = useCallback(async () => {
-    if (processing) return;
-    setProcessing(true);
-    void haptic.tap.light();
-    const result = await processPendingInbox({ force: true });
-    await reload();
-    setProcessing(false);
-    if (result.processed > 0) {
-      Toast.show({
-        type: 'success',
-        text1:
-          result.processed === 1
-            ? '1 captura clasificada'
-            : `${result.processed} capturas clasificadas`,
-      });
-    } else if (result.failed > 0) {
-      Toast.show({
-        type: 'error',
-        text1: 'No se pudieron procesar',
-        text2: result.errors[0]?.error,
-      });
-    }
-  }, [processing, reload]);
 
   const pendingLabel = pendingSummary.latest_error_code
     ? `${pendingSummary.total === 1
@@ -166,25 +137,26 @@ export default function HomeScreen() {
 
         {pendingSummary.total > 0 ? (
           <Pressable
-            accessibilityHint="Reintenta clasificar las capturas pendientes"
+            accessibilityHint="Abre la bandeja de capturas pendientes"
             accessibilityLabel={pendingLabel}
             accessibilityRole="button"
             hitSlop={8}
             onPress={() => {
-              void handleProcessPending();
+              void haptic.tap.light();
+              router.push('/capturas-pendientes');
             }}
             style={({ pressed }) => [
               styles.pendingChip,
               {
                 backgroundColor: theme.notes.accent.primaryDim,
-                opacity: pressed || processing ? 0.6 : 1,
+                opacity: pressed ? 0.6 : 1,
               },
             ]}
           >
-            <Text style={[styles.pendingText, { color: theme.notes.text.primary }]}>
-              {processing
-                ? 'Procesando…'
-                : pendingLabel}
+            <Text
+              style={[styles.pendingText, { color: theme.notes.text.primary }]}
+            >
+              {pendingLabel}
             </Text>
           </Pressable>
         ) : null}

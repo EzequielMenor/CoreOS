@@ -13,7 +13,7 @@
  */
 
 import type { InboxRow } from '@/db';
-import { dispatchRoutedResult, getDb, getPendingInbox } from '@/db';
+import { dispatchRoutedResult, getDb, getNextPendingInboxRetryAt, getPendingInbox } from '@/db';
 import {
   getInboxErrorMessage,
   InboxPipelineError,
@@ -121,7 +121,7 @@ async function failedResult(
   };
 }
 
-export async function processInboxItem(id: number): Promise<ProcessResult> {
+async function processInboxItemInternal(id: number): Promise<ProcessResult> {
   // 1. resolver DB (D11: try/catch — getDb puede lanzar si DB no inicializada)
   let db: Awaited<ReturnType<typeof getDb>>;
   try {
@@ -175,17 +175,19 @@ export async function processInboxItem(id: number): Promise<ProcessResult> {
 
   // 4. transacción con lock optimista (D12, I2)
   try {
+    let claimed = false;
     await db.withTransactionAsync(async () => {
       // ponytail: helper existente no lleva WHERE status='pending', inline necesario
       const result = await db.runAsync(
         `UPDATE inbox
           SET status=?, error_code=NULL, last_attempt_at=?,
               attempt_count=attempt_count+1, next_retry_at=NULL
-          WHERE id=? AND status=?`,
-        'processed', Date.now(), id, 'pending',
+          WHERE id=? AND status=? AND raw_text=?`,
+        'processed', Date.now(), id, 'pending', item.raw_text,
       );
       // Si otro caller ya procesó este item, changes=0 → early return (commit vacío)
       if (result.changes === 0) return;
+      claimed = true;
 
       // I1: dispatchRoutedResult debe usar solo runAsync/getFirstAsync directos,
       // nunca withTransactionAsync. Como getDb() retorna singleton, las queries
@@ -194,9 +196,28 @@ export async function processInboxItem(id: number): Promise<ProcessResult> {
       await dispatchRoutedResult(routed.type, routed.content as Record<string, unknown>, item.raw_text);
     });
 
+    // Una edición concurrente conserva la captura editada y descarta esta respuesta antigua.
+    if (!claimed) return { skipped: true, reason: 'not_pending' };
     return { skipped: false, routeType: routed.type, inboxId: id };
   } catch (error) {
     return failedResult(db, item, diagnose(error, 'dispatch'));
+  }
+}
+
+// I3 también cubre reintentos individuales que coinciden con el drenaje automático.
+let _itemQueue: Promise<void> = Promise.resolve();
+
+export async function processInboxItem(id: number): Promise<ProcessResult> {
+  const previous = _itemQueue;
+  let release!: () => void;
+  _itemQueue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await processInboxItemInternal(id);
+  } finally {
+    release();
   }
 }
 
@@ -206,6 +227,62 @@ let _batchInFlight: Promise<BatchResult> | null = null;
 // que el batch ya leyó: se marca retry y el owner da otra pasada al terminar.
 let _retryRequested = false;
 let _forceRetryRequested = false;
+
+const MAX_TIMER_DELAY_MS = 2_147_000_000;
+let _retryTimer: number | null = null;
+let _retryTimerAt: number | null = null;
+let _automaticRun: Promise<void> | null = null;
+
+async function scheduleAutomaticRetry(): Promise<void> {
+  let nextRetryAt: number | null;
+  try {
+    nextRetryAt = await getNextPendingInboxRetryAt();
+  } catch (error) {
+    console.warn('[inbox] retry schedule read failed', {
+      detail: error instanceof Error ? error.name : typeof error,
+    });
+    return;
+  }
+
+  if (nextRetryAt === null) {
+    if (_retryTimer) clearTimeout(_retryTimer);
+    _retryTimer = null;
+    _retryTimerAt = null;
+    return;
+  }
+
+  if (_retryTimer && _retryTimerAt !== null && _retryTimerAt <= nextRetryAt) return;
+  if (_retryTimer) clearTimeout(_retryTimer);
+
+  _retryTimerAt = nextRetryAt;
+  _retryTimer = setTimeout(() => {
+    _retryTimer = null;
+    _retryTimerAt = null;
+    void triggerAutomaticInboxProcessing();
+  }, Math.min(Math.max(0, nextRetryAt - Date.now()), MAX_TIMER_DELAY_MS));
+}
+
+export function triggerAutomaticInboxProcessing(options: { force?: boolean } = {}): Promise<void> {
+  if (_automaticRun) {
+    // Un guardado válido de configuración desbloquea también errores anteriores
+    // de credenciales; el mutex del pipeline absorbe la pasada extra.
+    if (options.force) void processPendingInbox({ force: true });
+    return _automaticRun;
+  }
+
+  _automaticRun = processPendingInbox({ force: options.force === true })
+    .then(() => undefined)
+    .catch((error) => {
+      // I4 protege el pipeline; este catch cubre fallos inesperados del caller.
+      console.warn('[inbox] automatic processing failed', {
+        detail: error instanceof Error ? error.name : typeof error,
+      });
+    })
+    .finally(() => {
+      _automaticRun = null;
+    });
+  return _automaticRun;
+}
 
 export async function processPendingInbox(options: { force?: boolean } = {}): Promise<BatchResult> {
   // Si ya hay un batch en vuelo, unirse y pedir pasada extra para el trabajo nuevo
@@ -229,6 +306,7 @@ export async function processPendingInbox(options: { force?: boolean } = {}): Pr
     return result;
   } finally {
     _batchInFlight = null;
+    void scheduleAutomaticRetry();
   }
 
   async function doProcess(force: boolean): Promise<BatchResult> {

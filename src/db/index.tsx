@@ -637,9 +637,28 @@ export async function updateInboxStatus(id: number, status: InboxRow['status']):
   await db.runAsync('UPDATE inbox SET status = ? WHERE id = ?', status, id);
 }
 
-export async function deleteInboxItem(id: number): Promise<void> {
+export async function deleteInboxItem(id: number): Promise<boolean> {
   const db = await getDb();
-  await db.runAsync('DELETE FROM inbox WHERE id = ?', id);
+  const result = await db.runAsync(
+    "DELETE FROM inbox WHERE id = ? AND status = 'pending'",
+    id,
+  );
+  return result.changes > 0;
+}
+
+export async function updatePendingInboxText(id: number, rawText: string): Promise<boolean> {
+  const normalizedText = rawText.trim();
+  if (!normalizedText) return false;
+  const db = await getDb();
+  const result = await db.runAsync(
+    `UPDATE inbox
+      SET raw_text=?, error_code=NULL, last_attempt_at=NULL,
+          attempt_count=0, next_retry_at=NULL
+      WHERE id=? AND status='pending'`,
+    normalizedText,
+    id,
+  );
+  return result.changes > 0;
 }
 
 export async function insertInbox(raw_text: string): Promise<number> {
@@ -663,6 +682,17 @@ export async function getPendingInbox(force = false): Promise<InboxRow[]> {
     force ? 1 : 0,
     Date.now(),
   );
+}
+
+export async function getNextPendingInboxRetryAt(): Promise<number | null> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<{ next_retry_at: number | null }>(
+    `SELECT MIN(next_retry_at) AS next_retry_at
+       FROM inbox
+      WHERE status = 'pending'
+        AND next_retry_at IS NOT NULL`,
+  );
+  return row?.next_retry_at ?? null;
 }
 
 export async function getPendingInboxSummary(): Promise<PendingInboxSummary> {
