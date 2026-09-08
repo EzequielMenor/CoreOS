@@ -310,6 +310,37 @@ h2 { max-width: 850px; margin-bottom: 28px; font-size: clamp(38px, 5.4vw, 75px);
 .promise-list strong, .promise-list small { display: block; }
 .promise-list strong { margin-bottom: 3px; font-size: 14px; }
 .promise-list small { color: var(--ink-3); font-size: 12px; }
+.roadmap-section { background: var(--bg); }
+.roadmap-rail { position: relative; display: flex; justify-content: space-between; max-width: 700px; margin-bottom: 80px; padding: 0; list-style: none; }
+.roadmap-rail::before { position: absolute; top: 4px; right: 6px; left: 4px; height: 1px; background: var(--line-strong); content: ''; }
+.rail-step { position: relative; padding-top: 21px; color: var(--ink-3); font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; }
+.rail-step::before { position: absolute; top: 0; left: 0; width: 9px; height: 9px; border-radius: 50%; content: ''; }
+.rail-step-shipped::before { z-index: 1; background: var(--green); box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 14%, transparent); }
+.rail-step-building::before { z-index: 1; background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); animation: rail-pulse 2.6s ease-in-out infinite; }
+.rail-step-next::before { border: 1px solid var(--gold); background: var(--bg); }
+.rail-step-exploring::before { border: 1px dashed var(--ink-3); background: var(--bg); }
+.roadmap-stages { margin: 0; padding: 0; border-top: 1px solid var(--line-strong); list-style: none; }
+.roadmap-stage { display: grid; grid-template-columns: minmax(220px, 0.38fr) 1fr; gap: clamp(32px, 5vw, 90px); padding: 48px 0; border-bottom: 1px solid var(--line); }
+.stage-head { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; }
+.stage-status { display: inline-flex; align-items: center; gap: 9px; color: var(--ink-2); font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; }
+.stage-dot { flex-shrink: 0; width: 6px; height: 6px; border-radius: 50%; }
+.roadmap-stage-shipped .stage-dot { background: var(--green); box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 14%, transparent); }
+.roadmap-stage-building .stage-dot { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.roadmap-stage-next .stage-dot { border: 1px solid var(--gold); background: var(--bg); }
+.roadmap-stage-explore .stage-dot { border: 1px dashed var(--ink-3); }
+.stage-head h3 { margin: 12px 0 0; font-size: clamp(24px, 2.4vw, 30px); font-weight: 600; letter-spacing: -0.05em; }
+.stage-version { padding: 4px 10px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--ink-2); font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em; }
+.stage-lede { max-width: 270px; margin: 6px 0 0; color: var(--ink-3); font-size: 13px; line-height: 1.45; }
+.stage-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px 34px; align-content: start; margin: 4px 0 0; padding: 0; list-style: none; }
+.stage-list li { position: relative; padding-left: 18px; color: var(--ink-2); font-size: 14px; line-height: 1.45; }
+.stage-list li::before { position: absolute; top: 0.55em; left: 0; width: 5px; height: 5px; border-radius: 50%; background: var(--line-strong); content: ''; }
+.roadmap-stage-shipped .stage-list li::before { background: var(--green); opacity: 0.5; }
+.roadmap-stage-building .stage-list li::before { background: var(--accent); }
+.explore-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; align-content: start; margin-top: 4px; }
+.explore-pill { padding: 16px 17px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); }
+.explore-pill strong { display: block; margin-bottom: 5px; font-size: 13.5px; letter-spacing: -0.02em; }
+.explore-pill small { color: var(--ink-3); font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.05em; text-transform: uppercase; }
+.roadmap-updated { margin: 36px 0 0; color: var(--ink-3); font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em; }
 
 .closing-section { padding-top: calc(var(--section-space) * 0.78); padding-bottom: calc(var(--section-space) * 0.78); background: var(--bg); }
 .closing-panel { position: relative; overflow: hidden; display: flex; flex-direction: column; align-items: flex-start; padding: clamp(45px, 7vw, 90px); border: 1px solid var(--line-strong); border-radius: var(--radius-lg); background: var(--accent); color: #fff7ed; }
@@ -336,6 +367,7 @@ h2 { max-width: 850px; margin-bottom: 28px; font-size: clamp(38px, 5.4vw, 75px);
 .js .reveal-delay-2 { transition-delay: 160ms; }
 .js .reveal-delay-3 { transition-delay: 230ms; }
 
+@keyframes rail-pulse { 50% { box-shadow: 0 0 0 9px transparent; } }
 @keyframes blink { 50% { opacity: 0; } }
 @keyframes menu-in { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: none; } }
 
@@ -360,6 +392,9 @@ h2 { max-width: 850px; margin-bottom: 28px; font-size: clamp(38px, 5.4vw, 75px);
   .domain-detail { grid-row: 3; }
   .domain-arrow { grid-column: 3; grid-row: 1; }
   .domain-row:hover { padding-inline: 8px; }
+  .roadmap-rail { max-width: 620px; margin-bottom: 60px; }
+  .roadmap-stage { grid-template-columns: 1fr; gap: 24px; padding: 40px 0; }
+  .stage-lede { max-width: 440px; }
 }
 
 @media (max-width: 700px) {
@@ -410,6 +445,11 @@ h2 { max-width: 850px; margin-bottom: 28px; font-size: clamp(38px, 5.4vw, 75px);
   .closing-panel { padding: 46px 25px 50px; }
   .closing-mark { top: 28px; right: 25px; }
   .closing-panel h2 { font-size: clamp(44px, 12vw, 64px); }
+  .roadmap-rail { margin-bottom: 46px; }
+  .rail-step { font-size: 8px; letter-spacing: 0.06em; }
+  .roadmap-stage { gap: 20px; padding: 34px 0; }
+  .stage-list { grid-template-columns: 1fr; gap: 10px; }
+  .explore-grid { grid-template-columns: repeat(2, 1fr); }
   .footer-inner { align-items: flex-start; flex-wrap: wrap; gap: 16px 25px; }
   .footer-inner p { order: 3; flex-basis: 100%; }
   .footer-links { margin-left: auto; }
@@ -420,6 +460,7 @@ h2 { max-width: 850px; margin-bottom: 28px; font-size: clamp(38px, 5.4vw, 75px);
   .screen-figure, .screen-figure-featured { grid-template-columns: 125px 1fr; gap: 18px; }
   .footer-links { width: 100%; margin-left: 0; justify-content: space-between; }
   .footer-links span { display: none; }
+  .explore-grid { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

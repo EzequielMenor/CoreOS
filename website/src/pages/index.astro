@@ -75,6 +75,7 @@ const domains = [
           <a href="#principle" data-nav-link>Principle</a>
           <a href="#flow" data-nav-link>How it works</a>
           <a href="#product" data-nav-link>Product</a>
+          <a href="#roadmap" data-nav-link>Roadmap</a>
           <a href="#privacy" data-nav-link>Local-first</a>
         </nav>
 
@@ -93,7 +94,8 @@ const domains = [
         <a href="#principle" data-nav-link>Principle <span>01</span></a>
         <a href="#flow" data-nav-link>How it works <span>02</span></a>
         <a href="#product" data-nav-link>Product <span>03</span></a>
-        <a href="#privacy" data-nav-link>Local-first <span>04</span></a>
+        <a href="#roadmap" data-nav-link>Roadmap <span>04</span></a>
+        <a href="#privacy" data-nav-link>Local-first <span>05</span></a>
       </nav>
     </header>
 
@@ -245,6 +247,91 @@ const domains = [
         </div>
       </section>
 
+      <section class="roadmap-section section" id="roadmap" aria-labelledby="roadmap-title">
+        <div class="container">
+          <div class="section-heading reveal">
+            <p class="section-kicker">Roadmap</p>
+            <h2 id="roadmap-title">Shipped is only<br /><em>the beginning.</em></h2>
+            <p>An honest snapshot of where CoreOS stands: what already works, what is being built now, and the direction the product is heading. No dates — the roadmap moves at the pace of real usage.</p>
+          </div>
+
+          <ol class="roadmap-rail reveal" aria-hidden="true">
+            <li class="rail-step rail-step-shipped">Shipped</li>
+            <li class="rail-step rail-step-building">Building now</li>
+            <li class="rail-step rail-step-next">Up next</li>
+            <li class="rail-step rail-step-exploring">Exploring</li>
+          </ol>
+
+          <ol class="roadmap-stages">
+            <li class="roadmap-stage roadmap-stage-shipped reveal">
+              <div class="stage-head">
+                <span class="stage-status"><i class="stage-dot" aria-hidden="true"></i>Shipped</span>
+                <h3>Foundation</h3>
+                <p class="stage-lede">The core loop works end to end: capture, persist, classify, organize.</p>
+              </div>
+              <ul class="stage-list">
+                <li>Quick text capture</li>
+                <li>Capture from other apps</li>
+                <li>Local persistence before any AI call</li>
+                <li>Classification into notes, tasks, and personal domains</li>
+                <li>Recovery of pending captures</li>
+                <li>Configurable AI providers and models</li>
+                <li>Tests covering the critical pipeline</li>
+              </ul>
+            </li>
+
+            <li class="roadmap-stage roadmap-stage-building reveal">
+              <div class="stage-head">
+                <span class="stage-status"><i class="stage-dot" aria-hidden="true"></i>Building now</span>
+                <h3>Capture Everywhere</h3>
+                <span class="stage-version">v0.2</span>
+                <p class="stage-lede">Capture should survive leaving the app. Voice joins text.</p>
+              </div>
+              <ul class="stage-list">
+                <li>Voice capture</li>
+                <li>Reviewable transcription before sending</li>
+                <li>Feedback on the destination of each capture</li>
+                <li>Dogfooding and end-to-end reliability</li>
+              </ul>
+            </li>
+
+            <li class="roadmap-stage roadmap-stage-next reveal">
+              <div class="stage-head">
+                <span class="stage-status"><i class="stage-dot" aria-hidden="true"></i>Up next</span>
+                <h3>Knowledge Library</h3>
+                <span class="stage-version">v0.3</span>
+                <p class="stage-lede">Notes become the center of gravity of the system.</p>
+              </div>
+              <ul class="stage-list">
+                <li>Notes as the primary unit</li>
+                <li>Optional sections and collections</li>
+                <li>Global search</li>
+                <li>Progressive organization</li>
+                <li>Related Notes through semantic and manual links</li>
+              </ul>
+            </li>
+
+            <li class="roadmap-stage roadmap-stage-explore reveal">
+              <div class="stage-head">
+                <span class="stage-status"><i class="stage-dot" aria-hidden="true"></i>Exploring</span>
+                <span class="stage-version">no dates</span>
+                <p class="stage-lede">Ideas with real pull. They may change shape or wait their turn.</p>
+              </div>
+              <div class="explore-grid" role="list">
+                <div class="explore-pill" role="listitem"><strong>Personal Domains</strong><small>habits · finances · health</small></div>
+                <div class="explore-pill" role="listitem"><strong>Rich Notes</strong><small>+ Apple Pencil</small></div>
+                <div class="explore-pill" role="listitem"><strong>Structured Data</strong><small>light databases</small></div>
+                <div class="explore-pill" role="listitem"><strong>Knowledge Graph</strong><small>connected thoughts</small></div>
+                <div class="explore-pill" role="listitem"><strong>Personal Home</strong><small>one calmer dashboard</small></div>
+                <div class="explore-pill" role="listitem"><strong>Desktop</strong><small>macOS</small></div>
+              </div>
+            </li>
+          </ol>
+
+          <p class="roadmap-updated">Last updated · September 2026</p>
+        </div>
+      </section>
+
       <section class="closing-section section" aria-labelledby="closing-title">
         <div class="container closing-panel reveal">
           <div class="closing-mark" aria-hidden="true"><span></span><span></span><span></span></div>
@@ -253,6 +340,7 @@ const domains = [
           <a class="button button-light" href={repoUrl} target="_blank" rel="noreferrer">See CoreOS on GitHub <span aria-hidden="true">↗</span></a>
         </div>
       </section>
+
     </main>
 
     <footer class="site-footer">
