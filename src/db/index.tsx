@@ -24,6 +24,15 @@ export interface PendingInboxSummary {
   latest_error_code: InboxErrorCode | null;
 }
 
+export interface AudioCaptureRow {
+  id: number;
+  file_uri: string;
+  created_at: number;
+  status: 'recorded' | 'transcribing' | 'transcribed' | 'failed' | 'completed' | 'discarded';
+  transcription: string | null;
+  error_message: string | null;
+}
+
 export interface NoteRow {
   id: number;
   title: string;
@@ -542,6 +551,37 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
     } catch (e) {
       console.warn('[migrations] tags_backfill_v1 failed (no-op):', e instanceof Error ? e.message : String(e));
     }
+  }
+
+  // Migración v4 (EZE-260): tabla audio_captures para persistir audio y estado
+  // antes de la transcripción y permitir reintentos.
+  const v4AudioDone = await db.getFirstAsync<{ value: string | null }>(
+    "SELECT value FROM schema_meta WHERE key='audio_captures_v4'",
+  );
+  const v4TableExists = await db.getFirstAsync<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='audio_captures'",
+  );
+  if (v4AudioDone?.value && !v4TableExists) {
+    await db.runAsync(
+      "DELETE FROM schema_meta WHERE key='audio_captures_v4'",
+    );
+  }
+  if (!v4AudioDone?.value || !v4TableExists) {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS audio_captures (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_uri TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('recorded', 'transcribing', 'transcribed', 'failed', 'completed', 'discarded')),
+        transcription TEXT,
+        error_message TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_audio_captures_status
+        ON audio_captures(status, created_at DESC);
+    `);
+    await db.runAsync(
+      "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('audio_captures_v4', '1')",
+    );
   }
 }
 

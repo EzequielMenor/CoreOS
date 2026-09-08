@@ -243,7 +243,7 @@ let _retryRequested = false;
 let _forceRetryRequested = false;
 
 const MAX_TIMER_DELAY_MS = 2_147_000_000;
-let _retryTimer: number | null = null;
+let _retryTimer: ReturnType<typeof setTimeout> | null = null;
 let _retryTimerAt: number | null = null;
 let _automaticRun: Promise<void> | null = null;
 

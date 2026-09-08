@@ -34,7 +34,7 @@ insert estructurado en SQLite. Sin backend, sin auth, sin multi-tenant.
 | Framework | Expo SDK | `~57.0.8` |
 | Router | `expo-router` (file-based) | `~57.0.8` |
 | Tabs nativos | `expo-router` `unstable-native-tabs` (`NativeTabs`) | 3 pestañas |
-| UI cross-platform | `@expo/ui` | `~57.0.7` |
+| Audio / Voz | `expo-audio` + `expo-speech-recognition` | `~57.0.4` / `^57.0.0` |
 | Lenguaje | TypeScript (strict) | `~6.0.3` |
 | React | React 19 | `19.2.3` |
 | Estado | `zustand` | `^5.0.14` |

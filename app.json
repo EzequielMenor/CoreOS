@@ -54,6 +54,19 @@
             }
           }
         }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "CoreOS necesita acceso al micrófono para capturar notas de voz."
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "CoreOS necesita acceso al micrófono para capturar notas de voz.",
+          "speechRecognitionPermission": "CoreOS utiliza el reconocimiento de voz para transcribir tus notas en el dispositivo."
+        }
       ]
     ],
     "experiments": {
