@@ -21,6 +21,8 @@ jest.mock('@/db', () => ({
 
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(),
+  setItemAsync: jest.fn(),
+  deleteItemAsync: jest.fn(),
 }));
 
 const mockGetPendingInbox = jest.mocked(getPendingInbox);
@@ -134,9 +136,16 @@ describe('pipeline de inbox', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetNextPendingInboxRetryAt.mockResolvedValue(null);
-    mockGetSecureItem.mockImplementation(async (key) => (
-      key === 'llm.apiKey' ? 'test-api-key' : null
-    ));
+    mockGetSecureItem.mockImplementation(async (key) => {
+      // Legacy keys (consumidas por código histórico y por la migración)
+      if (key === 'llm.apiKey') return 'test-api-key';
+      // Nuevas claves multi-proveedor: el código actual de llm-providers
+      // lee el proveedor activo y sus credenciales vía provider.*.
+      if (key === 'llm.activeProvider') return 'minimax';
+      if (key === 'llm.provider.minimax.apiKey') return 'test-api-key';
+      if (key === 'llm.provider.minimax.model') return 'MiniMax-Text-01';
+      return null;
+    });
     globalThis.fetch = mockFetch as unknown as typeof fetch;
     jest.spyOn(console, 'error').mockImplementation();
     jest.spyOn(console, 'info').mockImplementation();
