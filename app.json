@@ -8,7 +8,11 @@
     "scheme": "coreos",
     "userInterfaceStyle": "dark",
     "ios": {
-      "bundleIdentifier": "com.coreos.zettelkasten"
+      "bundleIdentifier": "com.coreos.zettelkasten",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "CoreOS necesita acceso al micrófono para capturar notas de voz.",
+        "NSSpeechRecognitionUsageDescription": "CoreOS utiliza el reconocimiento de voz para transcribir tus notas en el dispositivo."
+      }
     },
     "android": {
       "adaptiveIcon": {
