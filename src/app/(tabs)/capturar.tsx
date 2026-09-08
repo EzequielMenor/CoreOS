@@ -14,6 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
 
 import { NoteSpacing, Radii, Typography } from '@/constants/theme';
+import { useCaptureDraft } from '@/hooks/use-capture-draft';
 import { useTheme } from '@/hooks/use-theme';
 import { haptic } from '@/lib/animations';
 import { captureInbox } from '@/services/capture';
@@ -22,7 +23,8 @@ const KEYBOARD_BAR_NATIVE_ID = 'capture-keyboard-bar';
 
 export default function CapturarScreen() {
   const theme = useTheme();
-  const [text, setText] = useState('');
+  // Borrador persistente con autosave/debounce; ver use-capture-draft.ts.
+  const { text, handleChangeText, discardDraft } = useCaptureDraft();
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -35,8 +37,10 @@ export default function CapturarScreen() {
     try {
       // Persistir antes de pensar: la captura queda a salvo en inbox primero.
       const { processing } = await captureInbox(trimmed);
+      // insertInbox confirmó persistencia: único punto donde el borrador se
+      // borra. Si el guardado falla (catch), texto y borrador se mantienen.
+      discardDraft();
       void haptic.notify.success();
-      setText('');
       Toast.show({
         type: 'success',
         text1: 'Captura guardada',
@@ -101,7 +105,7 @@ export default function CapturarScreen() {
             placeholderTextColor={theme.notes.text.muted}
             selectionColor={theme.notes.accent.primary}
             value={text}
-            onChangeText={setText}
+            onChangeText={handleChangeText}
             textAlignVertical="top"
           />
 
