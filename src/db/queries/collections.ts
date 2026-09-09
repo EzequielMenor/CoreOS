@@ -35,12 +35,21 @@ function optionalDescription(description: string | null | undefined): string | n
   return description?.trim() || null;
 }
 
+export function normalizedName(name: string): string {
+  return name.trim().toLocaleLowerCase();
+}
+
 export async function createCollection(
   name: string,
   description?: string,
 ): Promise<number> {
   const db = await getDb();
   const trimmedName = requiredName(name);
+  const existing = (await db.getAllAsync<{ id: number; name: string }>(
+    'SELECT id, name FROM collections ORDER BY id ASC',
+  ) ?? []).find((row) => normalizedName(row.name) === normalizedName(trimmedName));
+  if (existing) return existing.id;
+
   const trimmedDescription = optionalDescription(description);
   const result = await db.runAsync(
     'INSERT INTO collections (name, description, created_at, updated_at) VALUES (?, ?, unixepoch(), unixepoch())',
@@ -56,6 +65,12 @@ export async function updateCollection(
 ): Promise<void> {
   const db = await getDb();
   const name = requiredName(input.name);
+  const conflicting = (await db.getAllAsync<{ id: number; name: string }>(
+    'SELECT id, name FROM collections WHERE id <> ? ORDER BY id ASC',
+    id,
+  ) ?? []).find((row) => normalizedName(row.name) === normalizedName(name));
+  if (conflicting) throw new Error('Ya existe una colección con ese nombre');
+
   const description = optionalDescription(input.description);
   await db.runAsync(
     'UPDATE collections SET name = ?, description = ?, updated_at = unixepoch() WHERE id = ?',
@@ -75,7 +90,11 @@ export async function getCollection(id: number): Promise<CollectionRow | null> {
 
 export async function deleteCollection(id: number): Promise<void> {
   const db = await getDb();
-  await db.runAsync('DELETE FROM collections WHERE id = ?', id);
+  await db.withTransactionAsync(async () => {
+    // ON DELETE CASCADE es inerte porque PRAGMA foreign_keys está desactivado en la app.
+    await db.runAsync('DELETE FROM note_collections WHERE collection_id = ?', id);
+    await db.runAsync('DELETE FROM collections WHERE id = ?', id);
+  });
 }
 
 // Una posición nula significa que la nota no está ordenada y aparece al final.

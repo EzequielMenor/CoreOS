@@ -3,6 +3,7 @@ import { File } from 'expo-file-system';
 import { RouteType } from '../services/llm';
 import type { InboxErrorCode } from '../services/inbox-diagnostics';
 import { setTagsForNoteNoTx } from './queries/tags';
+import { normalizedName } from './queries/collections';
 import { FTS_REINDEX_SQL, FTS_TRIGGER_DDL } from './fts-triggers';
 
 import { getDb, closeDb, DB_NAME, DB_DIR } from './client';
@@ -582,6 +583,97 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
       );
     });
   }
+
+  const collectionsNameDedupeDone = await db.getFirstAsync<{ value: string | null }>(
+    "SELECT value FROM schema_meta WHERE key='collections_name_dedupe_v1'",
+  );
+  if (!collectionsNameDedupeDone?.value) {
+    await db.withExclusiveTransactionAsync(async () => {
+      type CollectionNameRow = { id: number; name: string };
+      type MembershipRow = {
+        note_id: number;
+        collection_id: number;
+        position: number | null;
+        added_at: number;
+      };
+      type CollectionGroup = {
+        keeper: CollectionNameRow;
+        absorbed: CollectionNameRow[];
+      };
+
+      const collectionRows = await db.getAllAsync<CollectionNameRow>(
+        'SELECT id, name FROM collections ORDER BY id ASC',
+      );
+      const membershipRows = await db.getAllAsync<MembershipRow>(
+        'SELECT note_id, collection_id, position, added_at FROM note_collections',
+      );
+      const groups = new Map<string, CollectionGroup>();
+
+      for (const row of collectionRows) {
+        const key = normalizedName(row.name);
+        const group = groups.get(key);
+        if (group) group.absorbed.push(row);
+        else groups.set(key, { keeper: row, absorbed: [] });
+      }
+
+      for (const group of groups.values()) {
+        if (group.absorbed.length === 0) continue;
+
+        const groupIds = [group.keeper.id, ...group.absorbed.map((row) => row.id)];
+        const groupIdSet = new Set(groupIds);
+        const mergedMemberships = new Map<number, MembershipRow>();
+
+        for (const row of membershipRows) {
+          if (!groupIdSet.has(row.collection_id)) continue;
+          const existing = mergedMemberships.get(row.note_id);
+          if (!existing) {
+            mergedMemberships.set(row.note_id, { ...row, collection_id: group.keeper.id });
+            continue;
+          }
+          if (row.position !== null && (existing.position === null || row.position < existing.position)) {
+            existing.position = row.position;
+          }
+          if (row.added_at < existing.added_at) existing.added_at = row.added_at;
+        }
+
+        if (group.keeper.name !== group.keeper.name.trim()) {
+          await db.runAsync(
+            'UPDATE collections SET name = TRIM(name) WHERE id = ?',
+            group.keeper.id,
+          );
+        }
+        const groupPlaceholders = groupIds.map(() => '?').join(', ');
+        await db.runAsync(
+          `DELETE FROM note_collections WHERE collection_id IN (${groupPlaceholders})`,
+          ...groupIds,
+        );
+        for (const membership of mergedMemberships.values()) {
+          await db.runAsync(
+            'INSERT INTO note_collections (note_id, collection_id, position, added_at) VALUES (?, ?, ?, ?)',
+            membership.note_id,
+            group.keeper.id,
+            membership.position,
+            membership.added_at,
+          );
+        }
+        const absorbedPlaceholders = group.absorbed.map(() => '?').join(', ');
+        await db.runAsync(
+          `DELETE FROM collections WHERE id IN (${absorbedPlaceholders})`,
+          ...group.absorbed.map((row) => row.id),
+        );
+      }
+
+      await db.runAsync(
+        "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('collections_name_dedupe_v1', '1')",
+      );
+    });
+  }
+
+  // El índice debe crearse después de deduplicar: si no, los duplicados existentes
+  // abortan initDb y rompen el arranque.
+  await db.execAsync(
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_collections_name_unique ON collections (name COLLATE NOCASE)',
+  );
 
   // Migración para relaciones entre notas (EZE-297 / Related Notes).
   const relationsDone = await db.getFirstAsync<{ value: string | null }>(
