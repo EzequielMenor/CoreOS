@@ -237,6 +237,11 @@ export async function getById(id: number): Promise<Note | null> {
 // de resultados bien ordenada por relevancia.
 export const SEARCH_RESULT_LIMIT = 50;
 
+// Pesos de bm25 por columna (title, body_md, tags_names). Sin esto, una nota
+// que repite la palabra cinco veces en el cuerpo le gana a la que se LLAMA así,
+// y en una biblioteca de conocimiento el título es la señal más fuerte.
+const SEARCH_BM25_WEIGHTS = '10.0, 1.0, 1.0';
+
 // FTS5 trata comillas, `*` y paréntesis como sintaxis. Escapamos cada TOKEN por
 // separado (no la frase completa) y los unimos con AND: así «arquitectura
 // alpha» encuentra una nota que tiene ambas palabras repartidas, que la frase
@@ -270,7 +275,7 @@ export async function searchNotesWithScore(
   const rows = await db.getAllAsync<NoteRowWithScore>(
     `SELECT n.id, n.title, n.body_md, n.status, n.pinned, n.parent_id,
             n.section, n.content_type, n.created_at, n.updated_at, n.deleted_at,
-            bm25(notes_fts) AS bm25_raw,
+            bm25(notes_fts, ${SEARCH_BM25_WEIGHTS}) AS bm25_raw,
             (
               SELECT GROUP_CONCAT(t.name, ' ')
               FROM note_tags nt JOIN tags t ON t.id = nt.tag_id

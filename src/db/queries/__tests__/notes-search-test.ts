@@ -245,6 +245,28 @@ describe('searchNotesWithScore with real FTS5 (node:sqlite)', () => {
     expect(__stats.getAllAsync).toBe(2);
   });
 
+  // El titulo es la señal mas fuerte de una biblioteca de conocimiento. Con los
+  // pesos por defecto de bm25, una nota que solo repite la palabra en el cuerpo
+  // le ganaba a la que se LLAMA asi.
+  it('ranks a title match above a body that repeats the term', async () => {
+    const byTitle = insertNote('Arquitectura del motor', 'capitulo uno del libro de fisica');
+    const byBody = insertNote(
+      'Reunion',
+      'arquitectura arquitectura arquitectura arquitectura arquitectura',
+    );
+    for (let i = 0; i < 8; i += 1) {
+      insertNote(`Relleno ${i}`, 'texto variado del dia a dia sin relacion');
+    }
+
+    const hits = await searchNotesWithScore('arquitectura');
+
+    expect(hits.map((hit) => hit.note.id)).toEqual([
+      byTitle,
+      byBody,
+      ...hits.map((hit) => hit.note.id).filter((id) => id !== byTitle && id !== byBody),
+    ]);
+  });
+
   it('caps the result set so a large library stays responsive', async () => {
     for (let i = 0; i < 120; i += 1) {
       insertNote(`Nota grande ${i}`, `comparte la palabra manifiesto ${i}`);
