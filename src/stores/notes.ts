@@ -23,6 +23,8 @@ interface NotesState {
   search: (query: string) => Promise<void>;
   searchWithAbort: (query: string) => Promise<void>;
   clearSearch: () => void;
+  clearTagFilter: () => Promise<void>;
+  clearAllFilters: () => Promise<void>;
   toggleTagFilter: (tagId: number) => Promise<void>;
   setSectionFilter: (section: string | null) => Promise<void>;
   setCollectionFilter: (id: number | null) => Promise<void>;
@@ -145,6 +147,17 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       searchAbortController: null,
       loading: false,
     });
+  },
+
+  clearTagFilter: async () => {
+    set({ selectedTagIds: [] });
+    await get().fetchSections();
+  },
+
+  clearAllFilters: async () => {
+    get().clearSearch();
+    set({ sectionFilter: null, collectionFilter: null, selectedTagIds: [] });
+    await get().fetchSections();
   },
 
   toggleTagFilter: async (tagId) => {

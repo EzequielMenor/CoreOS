@@ -18,6 +18,7 @@ import { listNoteSections } from '@/db/queries/collections';
 import type { Note } from '@/db/queries/notes';
 import { useTheme } from '@/hooks/use-theme';
 import { haptic } from '@/lib/animations';
+import { pickLibraryView } from '@/lib/library-view';
 import { waitForPendingSave } from '@/lib/note-save-gate';
 import { useCollectionsStore } from '@/stores/collections';
 import { useNotesStore } from '@/stores/notes';
@@ -125,12 +126,16 @@ export default function NotesListScreen() {
   const tags = useTagsStore((state) => state.tags);
   const collections = useCollectionsStore((state) => state.collections);
   const fetchCollections = useCollectionsStore((state) => state.fetchCollections);
+  const fetchTags = useTagsStore((state) => state.fetchTags);
   const toggleTagFilter = useNotesStore((state) => state.toggleTagFilter);
+  const clearTagFilter = useNotesStore((state) => state.clearTagFilter);
+  const clearAllFilters = useNotesStore((state) => state.clearAllFilters);
 
   const [sectionNames, setSectionNames] = useState<string[]>([]);
   const [query, setQuery] = useState('');
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchMode = query.trim().length > 0;
+  const libraryView = pickLibraryView(searchMode, filteredNotes);
 
   const refreshSections = useCallback(() => {
     void fetchSections();
@@ -138,12 +143,16 @@ export default function NotesListScreen() {
 
   const refreshOrganizationFilters = useCallback(async () => {
     try {
-      const [nextSections] = await Promise.all([listNoteSections(), fetchCollections()]);
+      const [nextSections] = await Promise.all([
+        listNoteSections(),
+        fetchCollections(),
+        fetchTags(),
+      ]);
       setSectionNames(nextSections);
     } catch {
       setSectionNames([]);
     }
-  }, [fetchCollections]);
+  }, [fetchCollections, fetchTags]);
 
   useFocusEffect(
     useCallback(() => {
@@ -354,11 +363,8 @@ export default function NotesListScreen() {
             selected={selectedTagIds.length === 0}
             onPress={() => {
               if (selectedTagIds.length === 0) return;
-              void Promise.all(
-                selectedTagIds.map((tagId) =>
-                  useNotesStore.getState().toggleTagFilter(tagId),
-                ),
-              );
+              setQuery('');
+              void clearTagFilter();
             }}
           />
           {tags.map((tag) => (
@@ -368,6 +374,7 @@ export default function NotesListScreen() {
               variant="filter"
               selected={selectedTagIds.includes(tag.id)}
               onPress={() => {
+                setQuery('');
                 void toggleTagFilter(tag.id);
               }}
             />
@@ -375,12 +382,12 @@ export default function NotesListScreen() {
         </ScrollView>
       ) : null}
       <View style={styles.listWrap}>
-        {filteredNotes !== null ? (
+        {libraryView === 'filtered' ? (
           <FlatList
             contentContainerStyle={
-              filteredNotes.length ? styles.filteredContent : styles.emptyContent
+              filteredNotes?.length ? styles.filteredContent : styles.emptyContent
             }
-            data={filteredNotes}
+            data={filteredNotes ?? []}
             keyExtractor={(note) => String(note.id)}
             keyboardShouldPersistTaps="handled"
             ListEmptyComponent={
@@ -392,7 +399,7 @@ export default function NotesListScreen() {
                   label: 'Mostrar todas',
                   onPress: () => {
                     setQuery('');
-                    void setSectionFilter(null);
+                    void clearAllFilters();
                   },
                 }}
               />
