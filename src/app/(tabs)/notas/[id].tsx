@@ -32,6 +32,7 @@ import { useNotesStore } from '@/stores/notes';
 
 import { EmptyState } from '@/components/EmptyState';
 import { MarkdownView } from '@/components/MarkdownView';
+import { OrganizationSuggestions } from '@/components/OrganizationSuggestions';
 import { RelatedNotesSection } from '@/components/RelatedNotesSection';
 import { TagPill } from '@/components/TagPill';
 
@@ -391,6 +392,11 @@ export default function NoteDetailScreen() {
               )}
             </View>
 
+            <OrganizationSuggestions
+              note={note}
+              onCollectionsUpdated={setNoteCollections}
+              onNoteUpdated={setNote}
+            />
             <RelatedNotesSection noteId={note.id} />
           </ScrollView>
         <Modal
