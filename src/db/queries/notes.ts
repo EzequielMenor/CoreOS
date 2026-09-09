@@ -14,6 +14,8 @@ export interface Note {
   status: NoteStatus;
   pinned: number;
   parent_id: number | null;
+  section: string | null;
+  content_type: string;
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
@@ -44,8 +46,9 @@ export type Sections = {
   earlier: Note[];
 };
 
-interface SectionRow extends NoteLikeRow {
+interface SectionRow extends Omit<NoteLikeRow, 'section'> {
   section: 'PINNED' | 'TODAY' | 'YESTERDAY' | 'THIS_WEEK' | 'EARLIER';
+  note_section: string | null;
 }
 
 const TAG_SEPARATOR = ' ';
@@ -53,7 +56,10 @@ const TAG_SEPARATOR = ' ';
 // ponytail: el helper se queda como split-only porque las queries ya hacen
 // GROUP_CONCAT inline. Si en el futuro una query devuelve filas sin tags,
 // añadir aquí un fallback de batch-fetch vía WHERE note_id IN (?).
-type NoteLikeRow = Omit<Note, 'tags'> & { tag_names: string | null };
+type NoteLikeRow = Omit<Note, 'tags'> & {
+  tag_names: string | null;
+  content_type: string | null;
+};
 
 function attachTags<R extends NoteLikeRow>(rows: R[]): Note[] {
   return rows.map((row) => {
@@ -67,6 +73,8 @@ function attachTags<R extends NoteLikeRow>(rows: R[]): Note[] {
       status: row.status,
       pinned: row.pinned,
       parent_id: row.parent_id,
+      section: row.section ?? null,
+      content_type: row.content_type ?? 'markdown',
       created_at: row.created_at,
       updated_at: row.updated_at,
       deleted_at: row.deleted_at,
@@ -83,7 +91,7 @@ function sectionBucket(rows: SectionRow[]): Sections {
     thisWeek: [],
     earlier: [],
   };
-  const notes = attachTags(rows);
+  const notes = attachTags(rows.map((row) => ({ ...row, section: row.note_section })));
   for (const note of notes) {
     const row = rows.find((r) => r.id === note.id);
     const section = row?.section ?? 'EARLIER';
@@ -119,7 +127,8 @@ export async function getSections(
       )
     SELECT * FROM (
       SELECT 'PINNED' AS section, n.id, n.title, n.body_md, n.status,
-             n.pinned, n.parent_id, n.created_at, n.updated_at, n.deleted_at,
+             n.pinned, n.parent_id, n.section AS note_section,
+             n.content_type, n.created_at, n.updated_at, n.deleted_at,
            (
              SELECT GROUP_CONCAT(t.name, ' ')
              FROM note_tags nt JOIN tags t ON t.id = nt.tag_id
@@ -130,7 +139,8 @@ export async function getSections(
       AND (? IS NULL OR n.id IN (SELECT note_id FROM filter_clause))
     UNION ALL
     SELECT 'TODAY', n.id, n.title, n.body_md, n.status,
-           n.pinned, n.parent_id, n.created_at, n.updated_at, n.deleted_at,
+           n.pinned, n.parent_id, n.section, n.content_type,
+           n.created_at, n.updated_at, n.deleted_at,
            (
              SELECT GROUP_CONCAT(t.name, ' ')
              FROM note_tags nt JOIN tags t ON t.id = nt.tag_id
@@ -142,7 +152,8 @@ export async function getSections(
       AND (? IS NULL OR n.id IN (SELECT note_id FROM filter_clause))
     UNION ALL
     SELECT 'YESTERDAY', n.id, n.title, n.body_md, n.status,
-           n.pinned, n.parent_id, n.created_at, n.updated_at, n.deleted_at,
+           n.pinned, n.parent_id, n.section, n.content_type,
+           n.created_at, n.updated_at, n.deleted_at,
            (
              SELECT GROUP_CONCAT(t.name, ' ')
              FROM note_tags nt JOIN tags t ON t.id = nt.tag_id
@@ -155,7 +166,8 @@ export async function getSections(
       AND (? IS NULL OR n.id IN (SELECT note_id FROM filter_clause))
     UNION ALL
     SELECT 'THIS_WEEK', n.id, n.title, n.body_md, n.status,
-           n.pinned, n.parent_id, n.created_at, n.updated_at, n.deleted_at,
+           n.pinned, n.parent_id, n.section, n.content_type,
+           n.created_at, n.updated_at, n.deleted_at,
            (
              SELECT GROUP_CONCAT(t.name, ' ')
              FROM note_tags nt JOIN tags t ON t.id = nt.tag_id
@@ -168,7 +180,8 @@ export async function getSections(
       AND (? IS NULL OR n.id IN (SELECT note_id FROM filter_clause))
     UNION ALL
     SELECT 'EARLIER', n.id, n.title, n.body_md, n.status,
-           n.pinned, n.parent_id, n.created_at, n.updated_at, n.deleted_at,
+           n.pinned, n.parent_id, n.section, n.content_type,
+           n.created_at, n.updated_at, n.deleted_at,
            (
              SELECT GROUP_CONCAT(t.name, ' ')
              FROM note_tags nt JOIN tags t ON t.id = nt.tag_id
@@ -201,7 +214,7 @@ export async function getById(id: number): Promise<Note | null> {
   const db = await getDb();
   const row = await db.getFirstAsync<NoteRowWithTags>(
     `SELECT n.id, n.title, n.body_md, n.status, n.pinned, n.parent_id,
-            n.created_at, n.updated_at, n.deleted_at,
+            n.section, n.content_type, n.created_at, n.updated_at, n.deleted_at,
             (
               SELECT GROUP_CONCAT(t.name, ' ')
               FROM note_tags nt JOIN tags t ON t.id = nt.tag_id
@@ -229,7 +242,7 @@ export async function searchNotesWithScore(
   const db = await getDb();
   const rows = await db.getAllAsync<NoteRowWithScore>(
     `SELECT n.id, n.title, n.body_md, n.status, n.pinned, n.parent_id,
-            n.created_at, n.updated_at, n.deleted_at,
+            n.section, n.content_type, n.created_at, n.updated_at, n.deleted_at,
             bm25(notes_fts) AS bm25_raw,
             (
               SELECT GROUP_CONCAT(t.name, ' ')
@@ -248,6 +261,74 @@ export async function searchNotesWithScore(
     note,
     bm25: rows[index].bm25_raw,
   }));
+}
+
+function tagFilterCte(): string {
+  return `
+    WITH filter_clause AS (
+      SELECT note_id FROM note_tags
+      WHERE tag_id IN (SELECT value FROM json_each(?))
+      GROUP BY note_id
+      HAVING COUNT(DISTINCT tag_id) = (
+        SELECT COUNT(DISTINCT value) FROM json_each(?)
+      )
+    )`;
+}
+
+function noteWithTagsSelect(): string {
+  return `
+    n.id, n.title, n.body_md, n.status, n.pinned, n.parent_id,
+    n.section, n.content_type, n.created_at, n.updated_at, n.deleted_at,
+    (
+      SELECT GROUP_CONCAT(t.name, ' ')
+      FROM note_tags nt JOIN tags t ON t.id = nt.tag_id
+      WHERE nt.note_id = n.id
+    ) AS tag_names`;
+}
+
+export async function getNotesByCollection(
+  collectionId: number,
+  selectedTagIds: number[] | null,
+): Promise<Note[]> {
+  const db = await getDb();
+  const tagParam = selectedTagIds ? JSON.stringify(selectedTagIds) : null;
+  const rows = await db.getAllAsync<NoteRowWithTags>(
+    `${tagFilterCte()}
+     SELECT ${noteWithTagsSelect()}
+     FROM note_collections nc
+     JOIN notes n ON n.id = nc.note_id
+     WHERE nc.collection_id = ?
+       AND n.deleted_at IS NULL
+       AND (? IS NULL OR n.id IN (SELECT note_id FROM filter_clause))
+     ORDER BY nc.position IS NULL ASC, nc.position ASC, n.created_at DESC`,
+    tagParam,
+    tagParam,
+    collectionId,
+    tagParam,
+  );
+  return attachTags(rows);
+}
+
+export async function getNotesBySection(
+  section: string,
+  selectedTagIds: number[] | null,
+): Promise<Note[]> {
+  const db = await getDb();
+  const tagParam = selectedTagIds ? JSON.stringify(selectedTagIds) : null;
+  const rows = await db.getAllAsync<NoteRowWithTags>(
+    `${tagFilterCte()}
+     SELECT ${noteWithTagsSelect()}
+     FROM notes n
+     WHERE n.section = ?
+       AND n.deleted_at IS NULL
+       AND (? IS NULL OR n.id IN (SELECT note_id FROM filter_clause))
+     ORDER BY n.created_at DESC`,
+    tagParam,
+    tagParam,
+    section,
+    tagParam,
+  );
+  return attachTags(rows);
 }
 
 export async function createNote(input: CreateNoteInput): Promise<number> {
@@ -326,4 +407,26 @@ export async function pinNote(id: number, pinned: boolean): Promise<void> {
     pinned ? 1 : 0,
     id,
   );
+}
+
+export async function listRecentNotes(limit = 20, excludeId?: number): Promise<Note[]> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<NoteLikeRow>(
+    `SELECT n.id, n.title, n.body_md, n.status, n.pinned, n.parent_id,
+            n.section, n.content_type, n.created_at, n.updated_at, n.deleted_at,
+            (
+              SELECT GROUP_CONCAT(t.name, ' ')
+              FROM note_tags nt JOIN tags t ON t.id = nt.tag_id
+              WHERE nt.note_id = n.id
+            ) AS tag_names
+     FROM notes n
+     WHERE n.deleted_at IS NULL
+       AND (? IS NULL OR n.id != ?)
+     ORDER BY n.updated_at DESC
+     LIMIT ?`,
+    excludeId ?? null,
+    excludeId ?? null,
+    limit,
+  );
+  return attachTags(rows);
 }

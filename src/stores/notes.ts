@@ -9,6 +9,9 @@ import type {
 
 interface NotesState {
   sections: Sections;
+  filteredNotes: Note[] | null;
+  sectionFilter: string | null;
+  collectionFilter: number | null;
   searchResults: Note[];
   searchQuery: string;
   selectedTagIds: number[];
@@ -21,6 +24,8 @@ interface NotesState {
   searchWithAbort: (query: string) => Promise<void>;
   clearSearch: () => void;
   toggleTagFilter: (tagId: number) => Promise<void>;
+  setSectionFilter: (section: string | null) => Promise<void>;
+  setCollectionFilter: (id: number | null) => Promise<void>;
   createNote: (input: CreateNoteInput) => Promise<number>;
   updateNote: (id: number, patch: UpdateNoteInput) => Promise<void>;
   deleteNote: (id: number) => Promise<void>;
@@ -43,6 +48,9 @@ function setError(error: string | null): { error: string | null } {
 
 export const useNotesStore = create<NotesState>()((set, get) => ({
   sections: EMPTY_SECTIONS,
+  filteredNotes: null,
+  sectionFilter: null,
+  collectionFilter: null,
   searchResults: [],
   searchQuery: '',
   selectedTagIds: [],
@@ -55,8 +63,28 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
     try {
       const ids = get().selectedTagIds;
       const tagFilter = ids.length > 0 ? ids : null;
+      const sectionFilter = get().sectionFilter;
+      const collectionFilter = get().collectionFilter;
+
+      if (sectionFilter !== null) {
+        const filteredNotes = await notesRepo.getNotesBySection(
+          sectionFilter,
+          tagFilter,
+        );
+        set({ filteredNotes, loading: false });
+        return;
+      }
+      if (collectionFilter !== null) {
+        const filteredNotes = await notesRepo.getNotesByCollection(
+          collectionFilter,
+          tagFilter,
+        );
+        set({ filteredNotes, loading: false });
+        return;
+      }
+
       const sections = await notesRepo.getSections(tagFilter);
-      set({ sections, loading: false });
+      set({ sections, filteredNotes: null, loading: false });
     } catch (e) {
       set({
         ...setError(e instanceof Error ? e.message : 'fetchSections failed'),
@@ -125,6 +153,18 @@ export const useNotesStore = create<NotesState>()((set, get) => ({
       ? current.filter((id) => id !== tagId)
       : [...current, tagId];
     set({ selectedTagIds: next });
+    await get().fetchSections();
+  },
+
+  setSectionFilter: async (section) => {
+    get().clearSearch();
+    set({ sectionFilter: section, collectionFilter: null });
+    await get().fetchSections();
+  },
+
+  setCollectionFilter: async (id) => {
+    get().clearSearch();
+    set({ collectionFilter: id, sectionFilter: null });
     await get().fetchSections();
   },
 

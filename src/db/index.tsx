@@ -38,6 +38,8 @@ export interface NoteRow {
   title: string;
   content: string;
   tags: string; // JSON string[]
+  section: string | null;
+  content_type: string;
   created_at: number;
 }
 
@@ -583,6 +585,94 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
       "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('audio_captures_v4', '1')",
     );
   }
+
+  // Organización de notas: colecciones, membresías y sección textual.
+  const notesOrgDone = await db.getFirstAsync<{ value: string | null }>(
+    "SELECT value FROM schema_meta WHERE key='notes_org_v1'",
+  );
+  const collectionsTableExists = await db.getFirstAsync<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='collections'",
+  );
+  const orgNoteCols = await db.getAllAsync<{ name: string }>(
+    'PRAGMA table_info(notes)',
+  );
+  const orgNoteColNames = new Set(orgNoteCols.map((column) => column.name));
+  const haveOrgNoteCols = orgNoteColNames.has('section') && orgNoteColNames.has('content_type');
+
+  if (notesOrgDone?.value && !collectionsTableExists) {
+    await db.runAsync("DELETE FROM schema_meta WHERE key='notes_org_v1'");
+  }
+  if (!notesOrgDone?.value || !collectionsTableExists || !haveOrgNoteCols) {
+    if (!notesOrgDone?.value) await backupDatabase();
+
+    await db.withTransactionAsync(async () => {
+      await db.execAsync(`
+        CREATE TABLE IF NOT EXISTS collections (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS note_collections (
+          note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+          collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+          position INTEGER,
+          added_at INTEGER NOT NULL,
+          PRIMARY KEY (note_id, collection_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_note_collections_collection
+          ON note_collections(collection_id, position);
+      `);
+      if (!orgNoteColNames.has('section')) {
+        await db.execAsync('ALTER TABLE notes ADD COLUMN section TEXT;');
+      }
+      if (!orgNoteColNames.has('content_type')) {
+        await db.execAsync(
+          "ALTER TABLE notes ADD COLUMN content_type TEXT NOT NULL DEFAULT 'markdown';",
+        );
+      }
+      await db.runAsync(
+        "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('notes_org_v1', '1')",
+      );
+    });
+  }
+
+  // Migración para relaciones entre notas (EZE-297 / Related Notes).
+  const relationsDone = await db.getFirstAsync<{ value: string | null }>(
+    "SELECT value FROM schema_meta WHERE key='note_relations_v1'",
+  );
+  const relationsTableExists = await db.getFirstAsync<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='note_relations'",
+  );
+
+  if (relationsDone?.value && !relationsTableExists) {
+    await db.runAsync("DELETE FROM schema_meta WHERE key='note_relations_v1'");
+  }
+  if (!relationsDone?.value || !relationsTableExists) {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS note_relations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+        target_note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+        origin TEXT NOT NULL CHECK (origin IN ('manual', 'ai', 'semantic')),
+        status TEXT NOT NULL CHECK (status IN ('suggested', 'confirmed', 'rejected')),
+        similarity_score REAL,
+        reason TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        CHECK (source_note_id != target_note_id)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_note_relations_pair
+        ON note_relations(source_note_id, target_note_id);
+      CREATE INDEX IF NOT EXISTS idx_note_relations_source
+        ON note_relations(source_note_id, status);
+      CREATE INDEX IF NOT EXISTS idx_note_relations_target
+        ON note_relations(target_note_id, status);
+    `);
+    await db.runAsync(
+      "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('note_relations_v1', '1')",
+    );
+  }
 }
 
 export async function initDb(): Promise<void> {
@@ -608,6 +698,8 @@ export async function initDb(): Promise<void> {
       title TEXT NOT NULL,
       content TEXT NOT NULL DEFAULT '',
       tags TEXT NOT NULL DEFAULT '[]',
+      section TEXT,
+      content_type TEXT NOT NULL DEFAULT 'markdown',
       created_at INTEGER NOT NULL
     );
 
@@ -621,9 +713,25 @@ export async function initDb(): Promise<void> {
       FOREIGN KEY (target_id) REFERENCES notes(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS note_relations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+      target_note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+      origin TEXT NOT NULL CHECK (origin IN ('manual', 'ai', 'semantic')),
+      status TEXT NOT NULL CHECK (status IN ('suggested', 'confirmed', 'rejected')),
+      similarity_score REAL,
+      reason TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      CHECK (source_note_id != target_note_id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes(created_at);
     CREATE INDEX IF NOT EXISTS idx_note_links_source ON note_links(source_id);
     CREATE INDEX IF NOT EXISTS idx_note_links_target ON note_links(target_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_note_relations_pair ON note_relations(source_note_id, target_note_id);
+    CREATE INDEX IF NOT EXISTS idx_note_relations_source ON note_relations(source_note_id, status);
+    CREATE INDEX IF NOT EXISTS idx_note_relations_target ON note_relations(target_note_id, status);
 
     CREATE TABLE IF NOT EXISTS gastos (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

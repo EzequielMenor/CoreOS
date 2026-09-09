@@ -26,6 +26,7 @@ import {
 } from '@/components/MarkdownToolbar';
 import { TagPicker } from '@/components/TagPicker';
 import { TagPill } from '@/components/TagPill';
+import { RelatedNotesSection } from '@/components/RelatedNotesSection';
 
 export default function NewNoteScreen() {
   const theme = useTheme();
@@ -140,6 +141,9 @@ export default function NewNoteScreen() {
               value={editor.content}
             />
           </View>
+          {editor.noteId != null ? (
+            <RelatedNotesSection noteId={editor.noteId} />
+          ) : null}
         </ScrollView>
         <MarkdownToolbar onFormat={editor.handleFormat} />
         <TagPicker

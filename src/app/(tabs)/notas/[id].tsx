@@ -1,26 +1,37 @@
 import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Stack, useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 
+import {
+  addNoteToCollection,
+  getNoteCollections,
+  removeNoteFromCollection,
+} from '@/db/queries/collections';
+import type { CollectionRow } from '@/db/queries/collections';
 import { getById } from '@/db/queries/notes';
 import type { Note } from '@/db/queries/notes';
 import { IconSize, NoteSpacing, Typography } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { haptic } from '@/lib/animations';
+import { useCollectionsStore } from '@/stores/collections';
 import { useNotesStore } from '@/stores/notes';
 
 import { EmptyState } from '@/components/EmptyState';
 import { MarkdownView } from '@/components/MarkdownView';
+import { RelatedNotesSection } from '@/components/RelatedNotesSection';
 import { TagPill } from '@/components/TagPill';
 
 function formatTimestamp(seconds: number): string {
@@ -47,9 +58,17 @@ export default function NoteDetailScreen() {
   const params = useLocalSearchParams<{ id: string }>();
   const noteId = Number(params.id);
   const restoreNote = useNotesStore((state) => state.restoreNote);
+  const setNoteSection = useCollectionsStore((state) => state.setNoteSection);
+  const collections = useCollectionsStore((state) => state.collections);
+  const fetchCollections = useCollectionsStore((state) => state.fetchCollections);
   const [note, setNote] = useState<Note | null>(null);
+  const [noteCollections, setNoteCollections] = useState<CollectionRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  const [sectionModalVisible, setSectionModalVisible] = useState(false);
+  const [sectionDraft, setSectionDraft] = useState('');
+  const [collectionModalVisible, setCollectionModalVisible] = useState(false);
+  const [savingSection, setSavingSection] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -63,10 +82,11 @@ export default function NoteDetailScreen() {
       }
       setLoading(true);
       setNotFound(false);
-      getById(noteId)
-        .then((fetched) => {
+      Promise.all([getById(noteId), getNoteCollections(noteId)])
+        .then(([fetched, fetchedCollections]) => {
           if (!active) return;
           setNote(fetched);
+              setNoteCollections(fetchedCollections);
           setNotFound(fetched == null);
         })
         .catch((error: unknown) => {
@@ -97,7 +117,80 @@ export default function NoteDetailScreen() {
     });
   }, [note, restoreNote]);
 
-  if (loading) {
+  const openSectionEditor = useCallback(() => {
+        if (note == null) return;
+        setSectionDraft(note.section ?? '');
+        setSectionModalVisible(true);
+      }, [note]);
+
+      const saveSection = useCallback(async () => {
+        if (note == null || savingSection) return;
+        setSavingSection(true);
+        try {
+          await setNoteSection(note.id, sectionDraft.trim() || null);
+          const refreshed = await getById(note.id);
+          setNote(refreshed);
+          setSectionModalVisible(false);
+        } catch (error: unknown) {
+          Alert.alert(
+            'No se pudo guardar',
+            error instanceof Error ? error.message : 'Inténtalo de nuevo.',
+          );
+        } finally {
+          setSavingSection(false);
+        }
+      }, [note, savingSection, sectionDraft, setNoteSection]);
+
+      const removeSection = useCallback(() => {
+        setSectionDraft('');
+        void setNoteSection(noteId, null)
+          .then(() => getById(noteId))
+          .then(setNote)
+          .catch(() => {
+            Alert.alert('No se pudo quitar', 'Inténtalo de nuevo.');
+          });
+      }, [noteId, setNoteSection]);
+
+      const openCollectionEditor = useCallback(() => {
+        setCollectionModalVisible(true);
+        void fetchCollections();
+      }, [fetchCollections]);
+
+      const addCollection = useCallback(
+        async (collectionId: number) => {
+          if (note == null) return;
+          if (noteCollections.some((collection) => collection.id === collectionId)) {
+            setCollectionModalVisible(false);
+            return;
+          }
+          try {
+            await addNoteToCollection(note.id, collectionId);
+            setNoteCollections(await getNoteCollections(note.id));
+            setCollectionModalVisible(false);
+          } catch {
+            Alert.alert('No se pudo añadir', 'Inténtalo de nuevo.');
+          }
+        },
+        [note, noteCollections],
+      );
+
+      const removeCollection = useCallback(
+        (collectionId: number) => {
+          if (note == null) return;
+          void removeNoteFromCollection(note.id, collectionId)
+            .then(() => {
+              setNoteCollections((current) =>
+                current.filter((collection) => collection.id !== collectionId),
+              );
+            })
+            .catch(() => {
+              Alert.alert('No se pudo quitar', 'Inténtalo de nuevo.');
+            });
+        },
+        [note],
+      );
+
+      if (loading) {
     return (
       <SafeAreaView style={[styles.center, { backgroundColor: theme.notes.bg.base }]}>
         <Stack.Screen options={{ title: '', headerBackTitle: 'Notas' }} />
@@ -173,7 +266,50 @@ export default function NoteDetailScreen() {
                 ))}
               </View>
             ) : null}
-            <Text style={[styles.timestamp, { color: theme.notes.text.muted }]}>
+            <View
+                  style={[
+                    styles.organization,
+                    { borderTopColor: theme.notes.border.subtle },
+                  ]}
+                >
+                  <View style={styles.organizationRow}>
+                    <Text style={[styles.organizationLabel, { color: theme.notes.text.secondary }]}>Sección</Text>
+                    {note.section ? (
+                      <TagPill name={note.section} variant="display" />
+                    ) : (
+                      <Text style={[styles.organizationEmpty, { color: theme.notes.text.muted }]}>Sin sección</Text>
+                    )}
+                    <Pressable onPress={openSectionEditor}>
+                      <Text style={[styles.organizationAction, { color: theme.notes.text.accent }]}>Editar</Text>
+                    </Pressable>
+                    {note.section ? (
+                      <Pressable onPress={removeSection}>
+                        <Text style={[styles.organizationAction, { color: theme.notes.text.muted }]}>Quitar</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                  <View style={styles.organizationRow}>
+                    <Text style={[styles.organizationLabel, { color: theme.notes.text.secondary }]}>Colecciones</Text>
+                    <View style={styles.collectionChips}>
+                      {noteCollections.map((collection) => (
+                        <Pressable
+                          key={collection.id}
+                          accessibilityLabel={`Quitar de ${collection.name}`}
+                          accessibilityRole="button"
+                          onPress={() => removeCollection(collection.id)}
+                        >
+                          <TagPill name={collection.name} variant="display" />
+                        </Pressable>
+                      ))}
+                      <TagPill
+                        name="Añadir"
+                        variant="filter"
+                        onPress={openCollectionEditor}
+                      />
+                    </View>
+                  </View>
+                </View>
+                <Text style={[styles.timestamp, { color: theme.notes.text.muted }]}>
               {formatTimestamp(note.created_at)}
             </Text>
             <View
@@ -190,8 +326,106 @@ export default function NoteDetailScreen() {
                 </Text>
               )}
             </View>
+
+            <RelatedNotesSection noteId={note.id} />
           </ScrollView>
-        </>
+        <Modal
+                animationType="fade"
+                onRequestClose={() => setSectionModalVisible(false)}
+                transparent
+                visible={sectionModalVisible}
+              >
+                <View style={styles.modalOverlay}>
+                  <View
+                    style={[
+                      styles.modalPanel,
+                      {
+                        backgroundColor: theme.notes.bg.elevated,
+                        borderColor: theme.notes.border.subtle,
+                      },
+                    ]}
+                  >
+                    <Text style={[styles.modalTitle, { color: theme.notes.text.primary }]}>Sección</Text>
+                    <TextInput
+                      autoFocus
+                      onChangeText={setSectionDraft}
+                      onSubmitEditing={() => void saveSection()}
+                      placeholder="Ej. Trabajo"
+                      placeholderTextColor={theme.notes.text.muted}
+                      selectionColor={theme.notes.accent.primary}
+                      style={[
+                        styles.input,
+                        {
+                          backgroundColor: theme.notes.bg.surface,
+                          borderColor: theme.notes.border.subtle,
+                          color: theme.notes.text.primary,
+                        },
+                      ]}
+                      value={sectionDraft}
+                    />
+                    <View style={styles.modalActions}>
+                      <Pressable onPress={() => setSectionModalVisible(false)}>
+                        <Text style={[styles.modalAction, { color: theme.notes.text.muted }]}>Cancelar</Text>
+                      </Pressable>
+                      <Pressable disabled={savingSection} onPress={() => void saveSection()}>
+                        <Text style={[styles.modalAction, { color: theme.notes.text.accent }]}>Guardar</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                </View>
+              </Modal>
+              <Modal
+                animationType="fade"
+                onRequestClose={() => setCollectionModalVisible(false)}
+                transparent
+                visible={collectionModalVisible}
+              >
+                <View style={styles.modalOverlay}>
+                  <View
+                    style={[
+                      styles.modalPanel,
+                      {
+                        backgroundColor: theme.notes.bg.elevated,
+                        borderColor: theme.notes.border.subtle,
+                      },
+                    ]}
+                  >
+                    <Text style={[styles.modalTitle, { color: theme.notes.text.primary }]}>Añadir a colección</Text>
+                    {collections.length > 0 ? (
+                      collections.map((collection) => {
+                        const alreadyAdded = noteCollections.some((item) => item.id === collection.id);
+                        return (
+                          <Pressable
+                            key={collection.id}
+                            disabled={alreadyAdded}
+                            onPress={() => void addCollection(collection.id)}
+                            style={styles.collectionOption}
+                          >
+                            <Text
+                              style={[
+                                styles.collectionOptionText,
+                                {
+                                  color: alreadyAdded
+                                    ? theme.notes.text.muted
+                                    : theme.notes.text.primary,
+                                },
+                              ]}
+                            >
+                              {collection.name}{alreadyAdded ? ' · añadida' : ''}
+                            </Text>
+                          </Pressable>
+                        );
+                      })
+                    ) : (
+                      <Text style={[styles.organizationEmpty, { color: theme.notes.text.muted }]}>No hay colecciones todavía.</Text>
+                    )}
+                    <Pressable onPress={() => setCollectionModalVisible(false)}>
+                      <Text style={[styles.modalAction, { color: theme.notes.text.muted }]}>Cerrar</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </Modal>
+            </>
       )}
     </SafeAreaView>
   );
@@ -223,7 +457,82 @@ const styles = StyleSheet.create({
     gap: NoteSpacing.xs,
     marginTop: NoteSpacing.md,
   },
-  timestamp: {
+  organization: {
+      borderTopWidth: StyleSheet.hairlineWidth,
+      gap: NoteSpacing.sm,
+      marginTop: NoteSpacing.lg,
+      paddingTop: NoteSpacing.md,
+    },
+    organizationRow: {
+      alignItems: 'center',
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: NoteSpacing.sm,
+    },
+    organizationLabel: {
+      fontSize: Typography.caption.size,
+      fontWeight: '600',
+      minWidth: 88,
+    },
+    organizationEmpty: {
+      fontSize: Typography.caption.size,
+    },
+    organizationAction: {
+      fontSize: Typography.caption.size,
+      fontWeight: '600',
+    },
+    collectionChips: {
+      alignItems: 'center',
+      flex: 1,
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: NoteSpacing.xs,
+    },
+    modalOverlay: {
+      alignItems: 'center',
+      backgroundColor: 'rgba(0,0,0,0.45)',
+      flex: 1,
+      justifyContent: 'center',
+      padding: NoteSpacing.lg,
+    },
+    modalPanel: {
+      borderRadius: 12,
+      borderWidth: 1,
+      gap: NoteSpacing.md,
+      maxWidth: 480,
+      padding: NoteSpacing.lg,
+      width: '100%',
+    },
+    modalTitle: {
+      fontSize: Typography.subtitle.size,
+      fontWeight: Typography.subtitle.weight,
+    },
+    input: {
+      borderRadius: 8,
+      borderWidth: 1,
+      fontSize: Typography.body.size,
+      minHeight: 44,
+      paddingHorizontal: NoteSpacing.md,
+      paddingVertical: NoteSpacing.sm,
+    },
+    modalActions: {
+      alignItems: 'center',
+      flexDirection: 'row',
+      gap: NoteSpacing.lg,
+      justifyContent: 'flex-end',
+    },
+    modalAction: {
+      fontSize: Typography.body.size,
+      fontWeight: '600',
+    },
+    collectionOption: {
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      paddingVertical: NoteSpacing.sm,
+    },
+    collectionOptionText: {
+      fontSize: Typography.body.size,
+    },
+    timestamp: {
     fontSize: Typography.caption.size,
     fontWeight: Typography.caption.weight,
     lineHeight: Typography.caption.lineHeight,

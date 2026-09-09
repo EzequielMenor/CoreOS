@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  FlatList,
   Platform,
   Pressable,
   ScrollView,
@@ -13,18 +14,94 @@ import Toast from 'react-native-toast-message';
 import { SymbolView } from 'expo-symbols';
 
 import { IconSize, NoteSpacing, Radii } from '@/constants/theme';
+import { listNoteSections } from '@/db/queries/collections';
 import type { Note } from '@/db/queries/notes';
 import { useTheme } from '@/hooks/use-theme';
 import { haptic } from '@/lib/animations';
 import { waitForPendingSave } from '@/lib/note-save-gate';
+import { useCollectionsStore } from '@/stores/collections';
 import { useNotesStore } from '@/stores/notes';
 import { useTagsStore } from '@/stores/tags';
 
+import { EmptyState } from '@/components/EmptyState';
 import { SearchBar } from '@/components/SearchBar';
 import { SectionedNoteList } from '@/components/SectionedNoteList';
+import { SwipeableRow } from '@/components/SwipeableRow';
 import { TagPill } from '@/components/TagPill';
 
 const SEARCH_DEBOUNCE_MS = 300;
+
+type FilteredNoteRowProps = {
+  note: Note;
+  onPress: () => void;
+  onSwipeLeft: () => void;
+  onSwipeRight: () => void;
+};
+
+function FilteredNoteRow({
+  note,
+  onPress,
+  onSwipeLeft,
+  onSwipeRight,
+}: FilteredNoteRowProps) {
+  const theme = useTheme();
+  const visibleTags = note.tags.slice(0, 3);
+  const hiddenTagCount = note.tags.length - visibleTags.length;
+
+  return (
+    <SwipeableRow
+      leftAction={onSwipeRight}
+      rightAction={onSwipeLeft}
+      onTap={onPress}
+    >
+      <View
+        accessible
+        accessibilityRole="button"
+        style={[
+          styles.filteredRow,
+          {
+            backgroundColor: theme.notes.bg.surface,
+            borderBottomColor: theme.notes.border.subtle,
+            borderLeftColor: note.pinned ? theme.notes.accent.primary : 'transparent',
+          },
+        ]}
+      >
+        <View style={styles.filteredTitleRow}>
+          {note.pinned ? (
+            Platform.OS === 'ios' ? (
+              <SymbolView name="pin.fill" size={IconSize.sm} tintColor={theme.notes.text.accent} />
+            ) : (
+              <Text style={styles.filteredPinFallback}>📌</Text>
+            )
+          ) : null}
+          <Text
+            numberOfLines={1}
+            style={[styles.filteredTitle, { color: theme.notes.text.primary }]}
+          >
+            {note.title.trim() || 'Sin título'}
+          </Text>
+        </View>
+        <View style={styles.filteredMetadata}>
+          <View style={styles.filteredTags}>
+            {visibleTags.map((name) => (
+              <TagPill key={name} name={name} variant="display" />
+            ))}
+            {hiddenTagCount > 0 ? (
+              <TagPill name={`+${hiddenTagCount}`} variant="display" />
+            ) : null}
+          </View>
+          <Text style={[styles.filteredTimestamp, { color: theme.notes.text.muted }]}>
+            {new Date(
+              note.created_at > 10_000_000_000
+                ? note.created_at
+                : note.created_at * 1000,
+            ).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })}
+          </Text>
+        </View>
+      </View>
+    </SwipeableRow>
+  );
+}
 
 export default function NotesListScreen() {
   const router = useRouter();
@@ -40,9 +117,17 @@ export default function NotesListScreen() {
   const restoreNote = useNotesStore((state) => state.restoreNote);
   const pinNote = useNotesStore((state) => state.pinNote);
   const selectedTagIds = useNotesStore((state) => state.selectedTagIds);
+  const sectionFilter = useNotesStore((state) => state.sectionFilter);
+  const collectionFilter = useNotesStore((state) => state.collectionFilter);
+  const filteredNotes = useNotesStore((state) => state.filteredNotes);
+  const setSectionFilter = useNotesStore((state) => state.setSectionFilter);
+  const setCollectionFilter = useNotesStore((state) => state.setCollectionFilter);
   const tags = useTagsStore((state) => state.tags);
+  const collections = useCollectionsStore((state) => state.collections);
+  const fetchCollections = useCollectionsStore((state) => state.fetchCollections);
   const toggleTagFilter = useNotesStore((state) => state.toggleTagFilter);
 
+  const [sectionNames, setSectionNames] = useState<string[]>([]);
   const [query, setQuery] = useState('');
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchMode = query.trim().length > 0;
@@ -50,6 +135,15 @@ export default function NotesListScreen() {
   const refreshSections = useCallback(() => {
     void fetchSections();
   }, [fetchSections]);
+
+  const refreshOrganizationFilters = useCallback(async () => {
+    try {
+      const [nextSections] = await Promise.all([listNoteSections(), fetchCollections()]);
+      setSectionNames(nextSections);
+    } catch {
+      setSectionNames([]);
+    }
+  }, [fetchCollections]);
 
   useFocusEffect(
     useCallback(() => {
@@ -60,8 +154,9 @@ export default function NotesListScreen() {
       void (async () => {
         await waitForPendingSave();
         refreshSections();
+            void refreshOrganizationFilters();
       })();
-    }, [refreshSections]),
+    }, [refreshOrganizationFilters, refreshSections]),
   );
 
   useEffect(() => {
@@ -178,7 +273,67 @@ export default function NotesListScreen() {
           value={query}
         />
       </View>
-      {tags.length > 0 ? (
+      {sectionNames.length > 0 ? (
+            <ScrollView
+              contentContainerStyle={styles.tagRow}
+              horizontal
+              keyboardShouldPersistTaps="handled"
+              showsHorizontalScrollIndicator={false}
+              style={styles.tagRowWrap}
+            >
+              <TagPill
+                name="Todas"
+                variant="filter"
+                selected={sectionFilter === null && collectionFilter === null}
+                onPress={() => {
+                  setQuery('');
+                  void setSectionFilter(null);
+                }}
+              />
+              {sectionNames.map((section) => (
+                <TagPill
+                  key={section}
+                  name={section}
+                  variant="filter"
+                  selected={sectionFilter === section}
+                  onPress={() => {
+                    setQuery('');
+                    void setSectionFilter(sectionFilter === section ? null : section);
+                  }}
+                />
+              ))}
+            </ScrollView>
+          ) : null}
+          {collections.length > 0 ? (
+            <ScrollView
+              contentContainerStyle={styles.tagRow}
+              horizontal
+              keyboardShouldPersistTaps="handled"
+              showsHorizontalScrollIndicator={false}
+              style={styles.tagRowWrap}
+            >
+              {collections.map((collection) => (
+                <TagPill
+                  key={collection.id}
+                  name={collection.name}
+                  variant="filter"
+                  selected={collectionFilter === collection.id}
+                  onPress={() => {
+                    setQuery('');
+                    void setCollectionFilter(
+                      collectionFilter === collection.id ? null : collection.id,
+                    );
+                  }}
+                />
+              ))}
+              <TagPill
+                name="Gestionar"
+                variant="filter"
+                onPress={() => router.push('../colecciones')}
+              />
+            </ScrollView>
+          ) : null}
+          {tags.length > 0 ? (
         <ScrollView
           contentContainerStyle={styles.tagRow}
           horizontal
@@ -213,17 +368,47 @@ export default function NotesListScreen() {
         </ScrollView>
       ) : null}
       <View style={styles.listWrap}>
-        <SectionedNoteList
-          onNotePress={handleNotePress}
-          onSwipeLeft={handleSwipeLeft}
-          onSwipeRight={handleSwipeRight}
-          searchMode={searchMode}
-          searchResults={searchResults}
-          sections={sections}
-          selectedTagIds={selectedTagIds}
-          refreshing={loading}
-          onRefresh={refreshSections}
-        />
+        {filteredNotes !== null ? (
+          <FlatList
+            contentContainerStyle={
+              filteredNotes.length ? styles.filteredContent : styles.emptyContent
+            }
+            data={filteredNotes}
+            keyExtractor={(note) => String(note.id)}
+            keyboardShouldPersistTaps="handled"
+            ListEmptyComponent={
+              <EmptyState
+                illustration="sf.line.3.horizontal.decrease.circle"
+                title="Sin notas con este filtro"
+                subtitle="Prueba con otra sección o colección."
+              />
+            }
+            onRefresh={refreshSections}
+            refreshing={loading}
+            renderItem={({ item }) => (
+              <FilteredNoteRow
+                note={item}
+                onPress={() => handleNotePress(item.id)}
+                onSwipeLeft={() => handleSwipeLeft(item)}
+                onSwipeRight={() => handleSwipeRight(item)}
+              />
+            )}
+            showsVerticalScrollIndicator={false}
+            style={{ backgroundColor: theme.notes.bg.base }}
+          />
+        ) : (
+          <SectionedNoteList
+            onNotePress={handleNotePress}
+            onSwipeLeft={handleSwipeLeft}
+            onSwipeRight={handleSwipeRight}
+            searchMode={searchMode}
+            searchResults={searchResults}
+            sections={sections}
+            selectedTagIds={selectedTagIds}
+            refreshing={loading}
+            onRefresh={refreshSections}
+          />
+        )}
       </View>
 
       {/* FAB — mismo patron que gastos/tareas/hub (audit-ui-scout #5) */}
@@ -280,6 +465,49 @@ const styles = StyleSheet.create({
   listWrap: {
     flex: 1,
     marginTop: NoteSpacing.sm,
+  },
+  filteredContent: {
+    paddingBottom: NoteSpacing['2xl'],
+  },
+  emptyContent: {
+    flexGrow: 1,
+  },
+  filteredRow: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderLeftWidth: 2,
+    gap: NoteSpacing.xs,
+    paddingHorizontal: NoteSpacing.lg,
+    paddingVertical: NoteSpacing.md,
+  },
+  filteredTitleRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: NoteSpacing.sm,
+  },
+  filteredTitle: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '600',
+    letterSpacing: -0.1,
+  },
+  filteredMetadata: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: NoteSpacing.sm,
+    justifyContent: 'space-between',
+  },
+  filteredTags: {
+    flex: 1,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: NoteSpacing.xs,
+  },
+  filteredTimestamp: {
+    fontFamily: 'ui-monospace',
+    fontSize: 12,
+  },
+  filteredPinFallback: {
+    fontSize: IconSize.sm,
   },
   fab: {
     alignItems: 'center',
