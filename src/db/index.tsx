@@ -637,6 +637,34 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
     });
   }
 
+  const collectionsDescriptionDone = await db.getFirstAsync<{ value: string | null }>(
+    "SELECT value FROM schema_meta WHERE key='collections_description_v1'",
+  );
+  const collectionCols = await db.getAllAsync<{ name: string }>(
+    'PRAGMA table_info(collections)',
+  );
+  const hasCollectionDescription = collectionCols.some(
+    (column) => column.name === 'description',
+  );
+
+  if (collectionsDescriptionDone?.value && !hasCollectionDescription) {
+    await db.runAsync(
+      "DELETE FROM schema_meta WHERE key='collections_description_v1'",
+    );
+  }
+  if (!collectionsDescriptionDone?.value || !hasCollectionDescription) {
+    if (!hasCollectionDescription) await backupDatabase();
+
+    await db.withTransactionAsync(async () => {
+      if (!hasCollectionDescription) {
+        await db.execAsync('ALTER TABLE collections ADD COLUMN description TEXT;');
+      }
+      await db.runAsync(
+        "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('collections_description_v1', '1')",
+      );
+    });
+  }
+
   // Migración para relaciones entre notas (EZE-297 / Related Notes).
   const relationsDone = await db.getFirstAsync<{ value: string | null }>(
     "SELECT value FROM schema_meta WHERE key='note_relations_v1'",

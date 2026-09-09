@@ -10,10 +10,9 @@ interface CollectionsState {
   error: string | null;
 
   fetchCollections: () => Promise<void>;
-  create: (name: string) => Promise<number>;
-  rename: (id: number, name: string) => Promise<void>;
+  create: (name: string, description?: string) => Promise<number>;
+  update: (id: number, name: string, description: string | null) => Promise<void>;
   remove: (id: number) => Promise<void>;
-  setNoteCollections: (noteId: number, collectionIds: number[]) => Promise<void>;
   setOrder: (collectionId: number, orderedNoteIds: number[]) => Promise<void>;
   setNoteSection: (noteId: number, section: string | null) => Promise<void>;
 }
@@ -35,29 +34,29 @@ export const useCollectionsStore = create<CollectionsState>()((set, get) => ({
       set({ collections, loading: false });
     } catch (e) {
       set({
-        ...setError(e instanceof Error ? e.message : 'fetchCollections failed'),
+        ...setError(e instanceof Error ? e.message : String(e)),
         loading: false,
       });
     }
   },
 
-  create: async (name) => {
+  create: async (name, description) => {
     try {
-      const id = await collectionsRepo.createCollection(name);
+      const id = await collectionsRepo.createCollection(name, description);
       await get().fetchCollections();
       return id;
     } catch (e) {
-      set(setError(e instanceof Error ? e.message : 'createCollection failed'));
+      set(setError(e instanceof Error ? e.message : String(e)));
       throw e;
     }
   },
 
-  rename: async (id, name) => {
+  update: async (id, name, description) => {
     try {
-      await collectionsRepo.renameCollection(id, name);
+      await collectionsRepo.updateCollection(id, { name, description });
       await get().fetchCollections();
     } catch (e) {
-      set(setError(e instanceof Error ? e.message : 'renameCollection failed'));
+      set(setError(e instanceof Error ? e.message : String(e)));
       throw e;
     }
   },
@@ -67,30 +66,7 @@ export const useCollectionsStore = create<CollectionsState>()((set, get) => ({
       await collectionsRepo.deleteCollection(id);
       await get().fetchCollections();
     } catch (e) {
-      set(setError(e instanceof Error ? e.message : 'deleteCollection failed'));
-      throw e;
-    }
-  },
-
-  setNoteCollections: async (noteId, collectionIds) => {
-    try {
-      const current = await collectionsRepo.getNoteCollections(noteId);
-      const desiredIds = new Set(collectionIds);
-      const currentIds = new Set(current.map((collection) => collection.id));
-
-      for (const collectionId of collectionIds) {
-        if (!currentIds.has(collectionId)) {
-          await collectionsRepo.addNoteToCollection(noteId, collectionId);
-        }
-      }
-      for (const collectionId of currentIds) {
-        if (!desiredIds.has(collectionId)) {
-          await collectionsRepo.removeNoteFromCollection(noteId, collectionId);
-        }
-      }
-      await get().fetchCollections();
-    } catch (e) {
-      set(setError(e instanceof Error ? e.message : 'setNoteCollections failed'));
+      set(setError(e instanceof Error ? e.message : String(e)));
       throw e;
     }
   },
@@ -99,7 +75,7 @@ export const useCollectionsStore = create<CollectionsState>()((set, get) => ({
     try {
       await collectionsRepo.setCollectionOrder(collectionId, orderedNoteIds);
     } catch (e) {
-      set(setError(e instanceof Error ? e.message : 'setCollectionOrder failed'));
+      set(setError(e instanceof Error ? e.message : String(e)));
       throw e;
     }
   },
@@ -108,7 +84,7 @@ export const useCollectionsStore = create<CollectionsState>()((set, get) => ({
     try {
       await collectionsRepo.setNoteSection(noteId, section);
     } catch (e) {
-      set(setError(e instanceof Error ? e.message : 'setNoteSection failed'));
+      set(setError(e instanceof Error ? e.message : String(e)));
       throw e;
     }
   },
