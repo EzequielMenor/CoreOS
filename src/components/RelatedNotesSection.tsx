@@ -22,6 +22,10 @@ import { haptic } from '@/lib/animations';
 import { useNoteRelationsStore } from '@/stores/note-relations';
 import { TagPill } from '@/components/TagPill';
 
+// ponytail: fallback estable para el selector de Zustand — un `[]` literal crea
+// una referencia nueva por render y provoca un loop infinito con useSyncExternalStore.
+const EMPTY_RELATIONS: RelatedNoteItem[] = [];
+
 export interface RelatedNotesSectionProps {
   noteId: number;
 }
@@ -30,7 +34,9 @@ export function RelatedNotesSection({ noteId }: RelatedNotesSectionProps) {
   const router = useRouter();
   const theme = useTheme();
 
-  const relations = useNoteRelationsStore((state) => state.relationsByNoteId[noteId] ?? []);
+  const relations = useNoteRelationsStore(
+    (state) => state.relationsByNoteId[noteId] ?? EMPTY_RELATIONS,
+  );
   const loading = useNoteRelationsStore((state) => state.loadingByNoteId[noteId] ?? false);
   const suggesting = useNoteRelationsStore((state) => state.suggestingByNoteId[noteId] ?? false);
 
