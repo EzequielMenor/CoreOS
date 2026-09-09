@@ -4,12 +4,14 @@
 // «arquitectura alpha» no encontraba una nota que tenía ambas palabras separadas.
 import type { DatabaseSync } from 'node:sqlite';
 import { searchNotesWithScore } from '../notes';
+import { FTS_REINDEX_SQL } from '../../fts-triggers';
 
-// Esquema fidélito a notes_org_v1 / collections (src/db/index.tsx), incluyendo
-// el set de triggers que initDb re-asegura en cada arranque (DML plano, no
-// la sintaxis 'delete', porque notes_fts no es external-content).
+// Esquema fidélito a notes_org_v1 / collections (src/db/index.tsx). Los triggers
+// NO se copian a mano: se importa el mismo FTS_TRIGGER_DDL que ejecuta initDb,
+// así el test no puede quedarse verde con triggers de producción rotos.
 jest.mock('@/db', () => {
   const { DatabaseSync } = jest.requireActual('node:sqlite');
+  const { FTS_TRIGGER_DDL } = jest.requireActual('../../fts-triggers') as typeof import('../../fts-triggers');
 
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec(`
@@ -29,16 +31,6 @@ jest.mock('@/db', () => {
       deleted_at INTEGER
     );
     CREATE VIRTUAL TABLE notes_fts USING fts5(title, body_md, tags_names, tokenize = 'porter unicode61');
-    CREATE TRIGGER notes_ai AFTER INSERT ON notes BEGIN
-      INSERT INTO notes_fts (rowid, title, body_md, tags_names)
-      VALUES (new.id, new.title, new.body_md,
-        COALESCE((SELECT GROUP_CONCAT(t.name, ' ')
-          FROM note_tags nt JOIN tags t ON t.id = nt.tag_id
-          WHERE nt.note_id = new.id), ''));
-    END;
-    CREATE TRIGGER notes_ad AFTER DELETE ON notes BEGIN
-      DELETE FROM notes_fts WHERE rowid = old.id;
-    END;
     CREATE TABLE tags (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE);
     CREATE TABLE note_tags (
       note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
@@ -59,19 +51,8 @@ jest.mock('@/db', () => {
       added_at INTEGER NOT NULL,
       PRIMARY KEY (note_id, collection_id)
     );
-    CREATE TRIGGER notes_au AFTER UPDATE OF title, body_md ON notes BEGIN
-      UPDATE notes_fts
-      SET title = new.title,
-          body_md = new.body_md,
-          tags_names = COALESCE((SELECT GROUP_CONCAT(t.name, ' ')
-            FROM note_tags nt JOIN tags t ON t.id = nt.tag_id
-            WHERE nt.note_id = new.id), '')
-      WHERE rowid = new.id;
-    END;
-    CREATE TRIGGER note_tags_ai AFTER INSERT ON note_tags BEGIN
-      UPDATE notes SET updated_at = updated_at + 1 WHERE id = new.note_id;
-    END;
   `);
+  sqlite.exec(FTS_TRIGGER_DDL);
 
   const stats = { getAllAsync: 0 };
   const adapter = {
@@ -192,21 +173,47 @@ describe('searchNotesWithScore with real FTS5 (node:sqlite)', () => {
     expect(hits.length).toBe(2);
   });
 
-  // Test de CARACTERIZACIÓN de un defecto preexistente, no una aspiración.
-  // En producción, createNote inserta la nota (dispara notes_ai con
-  // tags_names = '') y después los tags; el juego de triggers que initDb
-  // re-asegura en cada arranque (src/db/index.tsx:364-370) solo toca
-  // notes.updated_at en note_tags_ai/ad, así que notes_fts.tags_names nunca se
-  // reindexa al etiquetar. Verificado aparte con sqlite3 real contra el esquema
-  // fidelity de arriba. Si EZE-298 arregla los triggers, este test debe
-  // invertirse (containing) en lugar de borrarse.
-  it('does NOT yet find a note by a tag added after it was created (EZE-298)', async () => {
+  it('finds a note by a tag added after it was created (EZE-298)', async () => {
     const tagged = insertNote('Apunte etiquetado', 'cuerpo neutro');
     tagNote(tagged, 'protocolo');
 
     const hits = await searchNotesWithScore('protocolo');
 
-    expect(idsOf(hits)).not.toContain(tagged);
+    expect(idsOf(hits)).toContain(tagged);
+  });
+
+  it('drops a tag from the index when the tag is removed', async () => {
+    const tagged = insertNote('Apunte etiquetado', 'cuerpo neutro');
+    tagNote(tagged, 'retirable');
+
+    const { __db } = jest.requireMock('@/db') as { __db: DatabaseSync };
+    __db.prepare('UPDATE notes SET title = ? WHERE id = ?').run('Apunte actualizado', tagged);
+
+    const taggedHits = await searchNotesWithScore('retirable');
+    expect(idsOf(taggedHits)).toContain(tagged);
+
+    __db.prepare('DELETE FROM note_tags WHERE note_id = ?').run(tagged);
+
+    const untaggedHits = await searchNotesWithScore('retirable');
+    expect(idsOf(untaggedHits)).not.toContain(tagged);
+  });
+
+  // FTS_REINDEX_SQL es lo que repara los dispositivos donde tags_names quedó
+  // stale: corregir los triggers no alcanza para las notas ya etiquetadas.
+  it('repairs an already-stale tag index with the versioned reindex', async () => {
+    const stale = insertNote('Nota anterior al fix', 'cuerpo neutro');
+    tagNote(stale, 'legado');
+
+    const { __db } = jest.requireMock('@/db') as { __db: DatabaseSync };
+    __db.prepare("UPDATE notes_fts SET tags_names = '' WHERE rowid = ?").run(stale);
+
+    const beforeHits = await searchNotesWithScore('legado');
+    expect(idsOf(beforeHits)).not.toContain(stale);
+
+    __db.exec(FTS_REINDEX_SQL);
+
+    const afterHits = await searchNotesWithScore('legado');
+    expect(idsOf(afterHits)).toContain(stale);
   });
 
   it('carries the organization context of each result', async () => {

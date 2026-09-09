@@ -3,6 +3,7 @@ import { File } from 'expo-file-system';
 import { RouteType } from '../services/llm';
 import type { InboxErrorCode } from '../services/inbox-diagnostics';
 import { setTagsForNoteNoTx } from './queries/tags';
+import { FTS_REINDEX_SQL, FTS_TRIGGER_DDL } from './fts-triggers';
 
 import { getDb, closeDb, DB_NAME, DB_DIR } from './client';
 export { getDb, closeDb, DB_NAME, DB_DIR };
@@ -236,81 +237,7 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
       FROM notes`);
 
     // 6. Triggers nuevos (mantienen consistencia notes ↔ notes_fts ↔ tags_names).
-    //    Los triggers referencian body_md y pasan el COALESCE exacto de tags_names en la claúsula 'delete'
-    //    para evitar corrupción de FTS5 / SQL logic error en UPDATE.
-    //    ponytail: note_tags PK es (note_id, tag_id), no tiene columna id.
-    //    Para excluir la fila recién insertada del aggregate 'delete' usamos
-    //    tag_id (la PK compuesta garantiza unicidad por par). El bug previo
-    //    referenciaba nt.id y new.id, que no existen en note_tags, reventando
-    //    UPDATE con "SQL logic error" en finalizeAsync.
-    await db.execAsync(`
-      DROP TRIGGER IF EXISTS notes_ai;
-      DROP TRIGGER IF EXISTS notes_ad;
-      DROP TRIGGER IF EXISTS notes_au;
-      DROP TRIGGER IF EXISTS note_tags_ai;
-      DROP TRIGGER IF EXISTS note_tags_ad;
-
-      CREATE TRIGGER notes_ai AFTER INSERT ON notes BEGIN
-        INSERT INTO notes_fts(rowid, title, body_md, tags_names)
-        VALUES (new.id, new.title, new.body_md,
-          COALESCE((SELECT GROUP_CONCAT(t.name, ' ')
-            FROM note_tags nt JOIN tags t ON t.id=nt.tag_id
-            WHERE nt.note_id=new.id), ''));
-      END;
-
-      CREATE TRIGGER notes_ad AFTER DELETE ON notes BEGIN
-        INSERT INTO notes_fts(notes_fts, rowid, title, body_md, tags_names)
-        VALUES ('delete', old.id, old.title, old.body_md,
-          COALESCE((SELECT GROUP_CONCAT(t.name, ' ')
-            FROM note_tags nt JOIN tags t ON t.id=nt.tag_id
-            WHERE nt.note_id=old.id), ''));
-      END;
-
-      CREATE TRIGGER notes_au AFTER UPDATE OF title, body_md ON notes BEGIN
-        INSERT INTO notes_fts(notes_fts, rowid, title, body_md, tags_names)
-        VALUES ('delete', old.id, old.title, old.body_md,
-          COALESCE((SELECT GROUP_CONCAT(t.name, ' ')
-            FROM note_tags nt JOIN tags t ON t.id=nt.tag_id
-            WHERE nt.note_id=old.id), ''));
-        INSERT INTO notes_fts(rowid, title, body_md, tags_names)
-        VALUES (new.id, new.title, new.body_md,
-          COALESCE((SELECT GROUP_CONCAT(t.name, ' ')
-            FROM note_tags nt JOIN tags t ON t.id=nt.tag_id
-            WHERE nt.note_id=new.id), ''));
-      END;
-
-      CREATE TRIGGER note_tags_ai AFTER INSERT ON note_tags BEGIN
-        UPDATE notes SET updated_at = (unixepoch()) WHERE id = new.note_id;
-        INSERT INTO notes_fts(notes_fts, rowid, title, body_md, tags_names)
-          VALUES ('delete', new.note_id,
-            (SELECT title FROM notes WHERE id=new.note_id),
-            (SELECT body_md FROM notes WHERE id=new.note_id),
-            COALESCE((SELECT GROUP_CONCAT(t.name, ' ') FROM tags t
-              JOIN note_tags nt ON nt.tag_id=t.id WHERE nt.note_id=new.note_id AND nt.tag_id != new.tag_id), ''));
-        INSERT INTO notes_fts(rowid, title, body_md, tags_names)
-          VALUES (new.note_id,
-            (SELECT title FROM notes WHERE id=new.note_id),
-            (SELECT body_md FROM notes WHERE id=new.note_id),
-            COALESCE((SELECT GROUP_CONCAT(t.name, ' ') FROM tags t
-              JOIN note_tags nt ON nt.tag_id=t.id WHERE nt.note_id=new.note_id), ''));
-      END;
-
-      CREATE TRIGGER note_tags_ad AFTER DELETE ON note_tags BEGIN
-        UPDATE notes SET updated_at = (unixepoch()) WHERE id = old.note_id;
-        INSERT INTO notes_fts(notes_fts, rowid, title, body_md, tags_names)
-          VALUES ('delete', old.note_id,
-            (SELECT title FROM notes WHERE id=old.note_id),
-            (SELECT body_md FROM notes WHERE id=old.note_id),
-            COALESCE((SELECT GROUP_CONCAT(t.name, ' ') FROM tags t
-              JOIN note_tags nt ON nt.tag_id=t.id WHERE nt.note_id=old.note_id), ''));
-        INSERT INTO notes_fts(rowid, title, body_md, tags_names)
-          VALUES (old.note_id,
-            (SELECT title FROM notes WHERE id=old.note_id),
-            (SELECT body_md FROM notes WHERE id=old.note_id),
-            COALESCE((SELECT GROUP_CONCAT(t.name, ' ') FROM tags t
-              JOIN note_tags nt ON nt.tag_id=t.id WHERE nt.note_id=old.note_id), ''));
-      END;
-    `);
+    await db.execAsync(FTS_TRIGGER_DDL);
 
     // 7. Reconstruir índice FTS5 para reparar cualquier inconsistencia previa.
     //    No swallow: el rebuild outer (línea ~372) reintenta; si ambos fallan
@@ -329,46 +256,23 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
   }
 
   // Re-asegurar TODOS los triggers FTS5 en cada initDb.
-  // notes_fts NO es una tabla 'external content', almacena sus propios datos.
-  // Por lo tanto, no se debe usar INSERT INTO notes_fts(notes_fts) VALUES ('delete'...).
-  // Se usan operaciones DML estándar (INSERT, UPDATE, DELETE).
-  await db.execAsync(`
-    DROP TRIGGER IF EXISTS notes_ai;
-    DROP TRIGGER IF EXISTS notes_ad;
-    DROP TRIGGER IF EXISTS notes_au;
-    DROP TRIGGER IF EXISTS note_tags_ai;
-    DROP TRIGGER IF EXISTS note_tags_ad;
+  await db.execAsync(FTS_TRIGGER_DDL);
 
-    CREATE TRIGGER notes_ai AFTER INSERT ON notes BEGIN
-      INSERT INTO notes_fts(rowid, title, body_md, tags_names)
-      VALUES (new.id, new.title, new.body_md,
-        COALESCE((SELECT GROUP_CONCAT(t.name, ' ')
-          FROM note_tags nt JOIN tags t ON t.id=nt.tag_id
-          WHERE nt.note_id=new.id), ''));
-    END;
-
-    CREATE TRIGGER notes_ad AFTER DELETE ON notes BEGIN
-      DELETE FROM notes_fts WHERE rowid = old.id;
-    END;
-
-    CREATE TRIGGER notes_au AFTER UPDATE OF title, body_md ON notes BEGIN
-      UPDATE notes_fts
-      SET title = new.title,
-          body_md = new.body_md,
-          tags_names = COALESCE((SELECT GROUP_CONCAT(t.name, ' ')
-            FROM note_tags nt JOIN tags t ON t.id=nt.tag_id
-            WHERE nt.note_id=new.id), '')
-      WHERE rowid = new.id;
-    END;
-
-    CREATE TRIGGER note_tags_ai AFTER INSERT ON note_tags BEGIN
-      UPDATE notes SET updated_at = (unixepoch()) WHERE id = new.note_id;
-    END;
-
-    CREATE TRIGGER note_tags_ad AFTER DELETE ON note_tags BEGIN
-      UPDATE notes SET updated_at = (unixepoch()) WHERE id = old.note_id;
-    END;
-  `);
+  // Curación v3: reconstruir tags_names tras corregir los triggers de etiquetas.
+  const ftsTagHeal = await db.getFirstAsync<{ value: string | null }>(
+    "SELECT value FROM schema_meta WHERE key='notes_fts_tag_heal_v3'",
+  );
+  if (!ftsTagHeal) {
+    try {
+      await db.execAsync(FTS_REINDEX_SQL);
+      await db.runAsync(
+        "INSERT INTO schema_meta (key, value) VALUES ('notes_fts_tag_heal_v3', '1')",
+      );
+      console.log('[db] FTS5 tag index healed and repopulated');
+    } catch (err) {
+      console.error('[db] FTS5 tag heal failed:', err);
+    }
+  }
 
   // Healing de una sola vez: limpiar el FTS corrupto y llenarlo de nuevo con DML normal.
   const ftsHeal = await db.getFirstAsync<{ value: string | null }>(
@@ -394,8 +298,8 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
     }
   }
 
-  // Rebuild incondicional: repara el índice FTS5 corrupto por los triggers
-  // viejos. Idempotente — en una DB sana es un no-op rápido (~ms).
+  // Rebuild incondicional: re-tokeniza el contenido que ya está en notes_fts;
+  // la curación versionada notes_fts_tag_heal_v3 actualiza tags_names desde notes.
   // ponytail: si falla aquí es seña de trigger corrupto o schema_meta
   // desincronizado. Subimos a error para no enmascarar la causa raíz.
   try {
