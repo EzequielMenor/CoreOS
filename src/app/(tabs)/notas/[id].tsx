@@ -292,14 +292,25 @@ export default function NoteDetailScreen() {
                     <Text style={[styles.organizationLabel, { color: theme.notes.text.secondary }]}>Colecciones</Text>
                     <View style={styles.collectionChips}>
                       {noteCollections.map((collection) => (
-                        <Pressable
-                          key={collection.id}
-                          accessibilityLabel={`Quitar de ${collection.name}`}
-                          accessibilityRole="button"
-                          onPress={() => removeCollection(collection.id)}
-                        >
-                          <TagPill name={collection.name} variant="display" />
-                        </Pressable>
+                        <View key={collection.id} style={styles.collectionChip}>
+                          <Pressable
+                            accessibilityLabel={`Abrir colección ${collection.name}`}
+                            accessibilityRole="button"
+                            hitSlop={8}
+                            onPress={() => router.push(`/colecciones/${collection.id}`)}
+                          >
+                            <TagPill name={collection.name} variant="display" />
+                          </Pressable>
+                          <Pressable
+                            accessibilityLabel={`Quitar de ${collection.name}`}
+                            accessibilityRole="button"
+                            hitSlop={8}
+                            onPress={() => removeCollection(collection.id)}
+                            style={styles.collectionRemove}
+                          >
+                            <Text style={[styles.collectionRemoveText, { color: theme.notes.text.muted }]}>×</Text>
+                          </Pressable>
+                        </View>
                       ))}
                       <TagPill
                         name="Añadir"
@@ -480,6 +491,19 @@ const styles = StyleSheet.create({
     organizationAction: {
       fontSize: Typography.caption.size,
       fontWeight: '600',
+    },
+    collectionChip: {
+      alignItems: 'center',
+      flexDirection: 'row',
+    },
+    collectionRemove: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      minHeight: 28,
+      minWidth: 24,
+    },
+    collectionRemoveText: {
+      fontSize: 18,
     },
     collectionChips: {
       alignItems: 'center',

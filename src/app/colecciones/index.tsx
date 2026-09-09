@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react';
 import {
   Alert,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -10,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Stack, useFocusEffect, useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 
 import { listCollectionNotes, removeNoteFromCollection } from '@/db/queries/collections';
@@ -26,6 +27,128 @@ interface CollectionNote {
   title: string;
 }
 
+interface CollectionModalProps {
+  title: string;
+  submitLabel: string;
+  initialName?: string;
+  initialDescription?: string | null;
+  visible: boolean;
+  onClose: () => void;
+  onSubmit: (name: string, description: string) => Promise<void>;
+}
+
+function CollectionModal({
+  title,
+  submitLabel,
+  initialName = '',
+  initialDescription = null,
+  visible,
+  onClose,
+  onSubmit,
+}: CollectionModalProps) {
+  const theme = useTheme();
+  const [name, setName] = useState(initialName);
+  const [description, setDescription] = useState(initialDescription ?? '');
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async () => {
+    if (!name.trim() || saving) return;
+    setSaving(true);
+    try {
+      await onSubmit(name, description);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      animationType="fade"
+      onRequestClose={onClose}
+      transparent
+      visible={visible}
+    >
+      <View style={styles.modalOverlay}>
+        <View
+          style={[
+            styles.modalPanel,
+            {
+              backgroundColor: theme.notes.bg.elevated,
+              borderColor: theme.notes.border.subtle,
+            },
+          ]}
+        >
+          <Text style={[styles.modalTitle, { color: theme.notes.text.primary }]}>{title}</Text>
+          <TextInput
+            autoFocus
+            onChangeText={setName}
+            onSubmitEditing={() => void handleSubmit()}
+            placeholder="Nombre de la colección"
+            placeholderTextColor={theme.notes.text.muted}
+            returnKeyType="done"
+            selectionColor={theme.notes.accent.primary}
+            style={[
+              styles.modalInput,
+              {
+                backgroundColor: theme.notes.bg.surface,
+                borderColor: theme.notes.border.subtle,
+                color: theme.notes.text.primary,
+              },
+            ]}
+            value={name}
+          />
+          <TextInput
+            multiline
+            onChangeText={setDescription}
+            placeholder="Descripción (opcional)"
+            placeholderTextColor={theme.notes.text.muted}
+            selectionColor={theme.notes.accent.primary}
+            style={[
+              styles.descriptionInput,
+              {
+                backgroundColor: theme.notes.bg.surface,
+                borderColor: theme.notes.border.subtle,
+                color: theme.notes.text.primary,
+              },
+            ]}
+            value={description}
+          />
+          <View style={styles.modalActions}>
+            <Pressable
+              accessibilityLabel="Cancelar"
+              accessibilityRole="button"
+              hitSlop={8}
+              onPress={onClose}
+            >
+              <Text style={[styles.modalAction, { color: theme.notes.text.muted }]}>Cancelar</Text>
+            </Pressable>
+            <Pressable
+              accessibilityLabel={submitLabel}
+              accessibilityRole="button"
+              disabled={!name.trim() || saving}
+              hitSlop={8}
+              onPress={() => void handleSubmit()}
+            >
+              <Text
+                style={[
+                  styles.modalAction,
+                  {
+                    color: name.trim() && !saving
+                      ? theme.notes.text.accent
+                      : theme.notes.text.muted,
+                  },
+                ]}
+              >
+                {submitLabel}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 export default function CollectionsScreen() {
   const router = useRouter();
   const theme = useTheme();
@@ -33,10 +156,12 @@ export default function CollectionsScreen() {
   const loading = useCollectionsStore((state) => state.loading);
   const fetchCollections = useCollectionsStore((state) => state.fetchCollections);
   const createCollection = useCollectionsStore((state) => state.create);
+  const updateCollection = useCollectionsStore((state) => state.update);
   const removeCollection = useCollectionsStore((state) => state.remove);
   const setOrder = useCollectionsStore((state) => state.setOrder);
 
-  const [name, setName] = useState('');
+  const [createModalVisible, setCreateModalVisible] = useState(false);
+  const [editingCollection, setEditingCollection] = useState<CollectionWithCount | null>(null);
   const [expandedCollectionId, setExpandedCollectionId] = useState<number | null>(null);
   const [expandedNotes, setExpandedNotes] = useState<CollectionNote[]>([]);
 
@@ -73,20 +198,38 @@ export default function CollectionsScreen() {
     [expandedCollectionId, loadNotes],
   );
 
-  const handleCreate = useCallback(async () => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    try {
-      await createCollection(trimmed);
-      setName('');
-      void haptic.notify.success();
-    } catch (error: unknown) {
-      Alert.alert(
-        'No se pudo crear',
-        error instanceof Error ? error.message : 'Inténtalo de nuevo.',
-      );
-    }
-  }, [createCollection, name]);
+  const handleCreate = useCallback(
+    async (collectionName: string, description: string) => {
+      try {
+        await createCollection(collectionName, description);
+        setCreateModalVisible(false);
+        void haptic.notify.success();
+      } catch (error: unknown) {
+        Alert.alert(
+          'No se pudo crear',
+          error instanceof Error ? error.message : 'Inténtalo de nuevo.',
+        );
+      }
+    },
+    [createCollection],
+  );
+
+  const handleUpdate = useCallback(
+    async (collectionName: string, description: string) => {
+      if (editingCollection == null) return;
+      try {
+        await updateCollection(editingCollection.id, collectionName, description);
+        setEditingCollection(null);
+        void haptic.notify.success();
+      } catch (error: unknown) {
+        Alert.alert(
+          'No se pudo guardar',
+          error instanceof Error ? error.message : 'Inténtalo de nuevo.',
+        );
+      }
+    },
+    [editingCollection, updateCollection],
+  );
 
   const confirmDelete = useCallback(
     (collection: CollectionWithCount) => {
@@ -156,69 +299,20 @@ export default function CollectionsScreen() {
       edges={['bottom']}
       style={[styles.container, { backgroundColor: theme.notes.bg.base }]}
     >
-      <Stack.Screen
-        options={{
-          title: 'Colecciones',
-          headerLeft: () => (
-            <Pressable
-              accessibilityLabel="Volver"
-              accessibilityRole="button"
-              hitSlop={8}
-              onPress={() => router.back()}
-            >
-              {Platform.OS === 'ios' ? (
-                <SymbolView
-                  name="chevron.left"
-                  size={IconSize.md}
-                  tintColor={theme.notes.text.primary}
-                />
-              ) : (
-                <Text style={[styles.backFallback, { color: theme.notes.text.primary }]}>‹</Text>
-              )}
-            </Pressable>
-          ),
-        }}
-      />
       <ScrollView
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.createRow}>
-          <TextInput
-            onChangeText={setName}
-            onSubmitEditing={() => void handleCreate()}
-            placeholder="Nueva colección…"
-            placeholderTextColor={theme.notes.text.muted}
-            returnKeyType="done"
-            selectionColor={theme.notes.accent.primary}
-            style={[
-              styles.input,
-              {
-                backgroundColor: theme.notes.bg.surface,
-                borderColor: theme.notes.border.subtle,
-                color: theme.notes.text.primary,
-              },
-            ]}
-            value={name}
-          />
-          <Pressable
-            accessibilityLabel="Crear colección"
-            accessibilityRole="button"
-            disabled={!name.trim()}
-            onPress={() => void handleCreate()}
-            style={[
-              styles.confirmButton,
-              {
-                backgroundColor: name.trim()
-                  ? theme.notes.accent.primary
-                  : theme.notes.bg.elevated,
-              },
-            ]}
-          >
-            <Text style={[styles.confirmText, { color: name.trim() ? '#FFFFFF' : theme.notes.text.muted }]}>Añadir</Text>
-          </Pressable>
-        </View>
+        <Pressable
+          accessibilityLabel="Nueva colección"
+          accessibilityRole="button"
+          hitSlop={8}
+          onPress={() => setCreateModalVisible(true)}
+          style={[styles.createButton, { backgroundColor: theme.notes.accent.primary }]}
+        >
+          <Text style={styles.createButtonText}>+ Nueva colección</Text>
+        </Pressable>
 
         {collections.length === 0 && !loading ? (
           <Text style={[styles.empty, { color: theme.notes.text.muted }]}>No hay colecciones todavía.</Text>
@@ -231,42 +325,72 @@ export default function CollectionsScreen() {
               key={collection.id}
               style={[styles.collectionBlock, { borderBottomColor: theme.notes.border.subtle }]}
             >
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ expanded }}
-                onLongPress={() => confirmDelete(collection)}
-                onPress={() => toggleCollection(collection.id)}
-                style={styles.collectionRow}
-              >
-                <View style={styles.collectionCopy}>
-                  <Text style={[styles.collectionName, { color: theme.notes.text.primary }]}>
-                    {collection.name}
+              <View style={styles.collectionRow}>
+                <Pressable
+                  accessibilityLabel={`Abrir colección ${collection.name}`}
+                  accessibilityRole="button"
+                  accessibilityState={{ expanded }}
+                  hitSlop={8}
+                  onLongPress={() => confirmDelete(collection)}
+                  onPress={() => router.push(`/colecciones/${collection.id}`)}
+                  style={styles.collectionMain}
+                >
+                  <View style={styles.collectionCopy}>
+                    <Text style={[styles.collectionName, { color: theme.notes.text.primary }]}>
+                      {collection.name}
+                    </Text>
+                    <Text style={[styles.count, { color: theme.notes.text.muted }]}>
+                      {collection.note_count} {collection.note_count === 1 ? 'nota' : 'notas'}
+                    </Text>
+                  </View>
+                </Pressable>
+                <Pressable
+                  accessibilityLabel={`${expanded ? 'Contraer' : 'Expandir'} colección ${collection.name}`}
+                  accessibilityRole="button"
+                  accessibilityState={{ expanded }}
+                  hitSlop={8}
+                  onPress={() => toggleCollection(collection.id)}
+                  style={styles.chevronButton}
+                >
+                  <Text style={[styles.chevron, { color: theme.notes.text.muted }]}>
+                    {expanded ? '⌃' : '⌄'}
                   </Text>
-                  <Text style={[styles.count, { color: theme.notes.text.muted }]}>
-                    {collection.note_count} {collection.note_count === 1 ? 'nota' : 'notas'}
-                  </Text>
-                </View>
-                <Text style={[styles.chevron, { color: theme.notes.text.muted }]}>
-                  {expanded ? '⌃' : '⌄'}
-                </Text>
-              </Pressable>
-              <Pressable
-                accessibilityLabel={`Eliminar colección ${collection.name}`}
-                accessibilityRole="button"
-                hitSlop={8}
-                onPress={() => confirmDelete(collection)}
-                style={styles.deleteButton}
-              >
-                {Platform.OS === 'ios' ? (
-                  <SymbolView
-                    name="trash"
-                    size={IconSize.sm}
-                    tintColor={theme.notes.text.muted}
-                  />
-                ) : (
-                  <Text style={[styles.deleteFallback, { color: theme.notes.text.muted }]}>🗑️</Text>
-                )}
-              </Pressable>
+                </Pressable>
+                <Pressable
+                  accessibilityLabel={`Editar colección ${collection.name}`}
+                  accessibilityRole="button"
+                  hitSlop={8}
+                  onPress={() => setEditingCollection(collection)}
+                  style={styles.rowAction}
+                >
+                  {Platform.OS === 'ios' ? (
+                    <SymbolView
+                      name="pencil"
+                      size={IconSize.sm}
+                      tintColor={theme.notes.text.muted}
+                    />
+                  ) : (
+                    <Text style={[styles.editFallback, { color: theme.notes.text.muted }]}>✎</Text>
+                  )}
+                </Pressable>
+                <Pressable
+                  accessibilityLabel={`Eliminar colección ${collection.name}`}
+                  accessibilityRole="button"
+                  hitSlop={8}
+                  onPress={() => confirmDelete(collection)}
+                  style={styles.rowAction}
+                >
+                  {Platform.OS === 'ios' ? (
+                    <SymbolView
+                      name="trash"
+                      size={IconSize.sm}
+                      tintColor={theme.notes.text.muted}
+                    />
+                  ) : (
+                    <Text style={[styles.deleteFallback, { color: theme.notes.text.muted }]}>🗑️</Text>
+                  )}
+                </Pressable>
+              </View>
               {expanded ? (
                 <View style={styles.notesList}>
                   {expandedNotes.length === 0 ? (
@@ -287,6 +411,7 @@ export default function CollectionsScreen() {
                           accessibilityLabel="Subir nota"
                           accessibilityRole="button"
                           disabled={index === 0}
+                          hitSlop={8}
                           onPress={() => void reorderNote(index, -1)}
                           style={styles.noteAction}
                         >
@@ -296,6 +421,7 @@ export default function CollectionsScreen() {
                           accessibilityLabel="Bajar nota"
                           accessibilityRole="button"
                           disabled={index === expandedNotes.length - 1}
+                          hitSlop={8}
                           onPress={() => void reorderNote(index, 1)}
                           style={styles.noteAction}
                         >
@@ -304,6 +430,7 @@ export default function CollectionsScreen() {
                         <Pressable
                           accessibilityLabel={`Quitar ${note.title}`}
                           accessibilityRole="button"
+                          hitSlop={8}
                           onPress={() => void removeNote(note.id)}
                           style={styles.noteAction}
                         >
@@ -318,6 +445,26 @@ export default function CollectionsScreen() {
           );
         })}
       </ScrollView>
+      {createModalVisible ? (
+        <CollectionModal
+          onClose={() => setCreateModalVisible(false)}
+          onSubmit={handleCreate}
+          submitLabel="Crear"
+          title="Nueva colección"
+          visible
+        />
+      ) : null}
+      {editingCollection ? (
+        <CollectionModal
+          initialDescription={editingCollection.description}
+          initialName={editingCollection.name}
+          onClose={() => setEditingCollection(null)}
+          onSubmit={handleUpdate}
+          submitLabel="Guardar"
+          title="Editar colección"
+          visible
+        />
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -330,44 +477,33 @@ const styles = StyleSheet.create({
     padding: NoteSpacing.lg,
     paddingBottom: NoteSpacing['2xl'],
   },
-  createRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: NoteSpacing.sm,
-    marginBottom: NoteSpacing.lg,
-  },
-  input: {
-    borderRadius: Radii.md,
-    borderWidth: 1,
-    flex: 1,
-    fontSize: Typography.body.size,
-    minHeight: 44,
-    paddingHorizontal: NoteSpacing.md,
-    paddingVertical: NoteSpacing.sm,
-  },
-  confirmButton: {
+  createButton: {
     alignItems: 'center',
     borderRadius: Radii.md,
     justifyContent: 'center',
+    marginBottom: NoteSpacing.lg,
     minHeight: 44,
     paddingHorizontal: NoteSpacing.md,
   },
-  confirmText: {
-    fontSize: Typography.caption.size,
+  createButtonText: {
+    color: '#FFFFFF',
+    fontSize: Typography.body.size,
     fontWeight: '600',
   },
   collectionBlock: {
     borderBottomWidth: StyleSheet.hairlineWidth,
-    position: 'relative',
   },
   collectionRow: {
     alignItems: 'center',
     flexDirection: 'row',
     minHeight: 68,
-    paddingRight: NoteSpacing.xl,
+  },
+  collectionMain: {
+    flex: 1,
+    minHeight: 68,
+    justifyContent: 'center',
   },
   collectionCopy: {
-    flex: 1,
     gap: NoteSpacing.xs,
   },
   collectionName: {
@@ -377,18 +513,23 @@ const styles = StyleSheet.create({
   count: {
     fontSize: Typography.caption.size,
   },
+  chevronButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
+    minWidth: 36,
+  },
   chevron: {
     fontSize: 20,
-    paddingHorizontal: NoteSpacing.sm,
   },
-  deleteButton: {
+  rowAction: {
     alignItems: 'center',
-    minHeight: 44,
-    minWidth: 44,
     justifyContent: 'center',
-    position: 'absolute',
-    right: 0,
-    top: 12,
+    minHeight: 44,
+    minWidth: 36,
+  },
+  editFallback: {
+    fontSize: 20,
   },
   deleteFallback: {
     fontSize: IconSize.sm,
@@ -415,9 +556,9 @@ const styles = StyleSheet.create({
   },
   noteAction: {
     alignItems: 'center',
+    justifyContent: 'center',
     minHeight: 36,
     minWidth: 32,
-    justifyContent: 'center',
   },
   noteActionText: {
     fontSize: 22,
@@ -427,9 +568,50 @@ const styles = StyleSheet.create({
     paddingVertical: NoteSpacing.xl,
     textAlign: 'center',
   },
-  backFallback: {
-    fontSize: 28,
-    fontWeight: '300',
-    lineHeight: 28,
+  modalOverlay: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    flex: 1,
+    justifyContent: 'center',
+    padding: NoteSpacing.lg,
+  },
+  modalPanel: {
+    borderRadius: Radii.md,
+    borderWidth: 1,
+    gap: NoteSpacing.md,
+    maxWidth: 480,
+    padding: NoteSpacing.lg,
+    width: '100%',
+  },
+  modalTitle: {
+    fontSize: Typography.subtitle.size,
+    fontWeight: Typography.subtitle.weight,
+  },
+  modalInput: {
+    borderRadius: Radii.sm,
+    borderWidth: 1,
+    fontSize: Typography.body.size,
+    minHeight: 44,
+    paddingHorizontal: NoteSpacing.md,
+    paddingVertical: NoteSpacing.sm,
+  },
+  descriptionInput: {
+    borderRadius: Radii.sm,
+    borderWidth: 1,
+    fontSize: Typography.body.size,
+    minHeight: 88,
+    paddingHorizontal: NoteSpacing.md,
+    paddingVertical: NoteSpacing.sm,
+    textAlignVertical: 'top',
+  },
+  modalActions: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: NoteSpacing.lg,
+    justifyContent: 'flex-end',
+  },
+  modalAction: {
+    fontSize: Typography.body.size,
+    fontWeight: '600',
   },
 });

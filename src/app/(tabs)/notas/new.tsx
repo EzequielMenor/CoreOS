@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -9,9 +9,14 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
 import { NoteSpacing, Typography } from '@/constants/theme';
+import {
+  addNoteToCollection,
+  getCollection,
+} from '@/db/queries/collections';
+import type { CollectionRow } from '@/db/queries/collections';
 import type { CreateNoteInput, UpdateNoteInput } from '@/db/queries/notes';
 import { useTheme } from '@/hooks/use-theme';
 import { useNoteEditor } from '@/hooks/use-note-editor';
@@ -31,13 +36,47 @@ import { RelatedNotesSection } from '@/components/RelatedNotesSection';
 export default function NewNoteScreen() {
   const theme = useTheme();
   const router = useRouter();
+  const { collectionId: rawCollectionId } = useLocalSearchParams<{ collectionId?: string }>();
+  const collectionId = typeof rawCollectionId === 'string' ? Number(rawCollectionId) : NaN;
+  const validCollectionId = Number.isInteger(collectionId) && collectionId > 0;
+  const [collection, setCollection] = useState<CollectionRow | null>(null);
   const createNote = useNotesStore((state) => state.createNote);
   const updateNote = useNotesStore((state) => state.updateNote);
   const createTag = useTagsStore((state) => state.createTag);
   const availableTags = useTagsStore((state) => state.tags);
 
+  useEffect(() => {
+    if (!validCollectionId) return;
+    let active = true;
+    void getCollection(collectionId)
+      .then((fetched) => {
+        if (active) setCollection(fetched);
+      })
+      .catch(() => {
+        // La colección puede haberse eliminado antes de abrir el editor.
+      });
+    return () => {
+      active = false;
+    };
+  }, [collectionId, validCollectionId]);
+
+  const handleCreateNote = useCallback(
+    async (input: CreateNoteInput) => {
+      const createdNoteId = await createNote(input);
+      if (validCollectionId) {
+        try {
+          await addNoteToCollection(createdNoteId, collectionId);
+        } catch (error: unknown) {
+          console.error('[NewNote] add to collection failed', error);
+        }
+      }
+      return createdNoteId;
+    },
+    [collectionId, createNote, validCollectionId],
+  );
+
   const editor = useNoteEditor({
-    onCreateNote: async (input: CreateNoteInput) => createNote(input),
+    onCreateNote: handleCreateNote,
     onUpdateNote: async (id: number, patch: UpdateNoteInput) => updateNote(id, patch),
     onCreateTag: async (name: string) => {
       await createTag(name);
@@ -89,6 +128,19 @@ export default function NewNoteScreen() {
             ),
           }}
         />
+        {collection ? (
+          <View
+            style={[
+              styles.collectionContext,
+              {
+                backgroundColor: theme.notes.bg.surface,
+                borderColor: theme.notes.border.subtle,
+              },
+            ]}
+          >
+            <Text style={[styles.collectionContextText, { color: theme.notes.text.secondary }]}>Colección: {collection.name}</Text>
+          </View>
+        ) : null}
         <ScrollView
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
@@ -167,6 +219,19 @@ const styles = StyleSheet.create({
     paddingBottom: NoteSpacing['2xl'],
     paddingHorizontal: NoteSpacing.lg,
     paddingTop: NoteSpacing.md,
+  },
+  collectionContext: {
+    alignSelf: 'flex-start',
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    marginHorizontal: NoteSpacing.lg,
+    marginTop: NoteSpacing.md,
+    paddingHorizontal: NoteSpacing.md,
+    paddingVertical: NoteSpacing.xs,
+  },
+  collectionContextText: {
+    fontSize: Typography.caption.size,
+    lineHeight: Typography.caption.lineHeight,
   },
   tagBar: {
     alignItems: 'center',
