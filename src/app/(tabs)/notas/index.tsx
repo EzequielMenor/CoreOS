@@ -192,6 +192,13 @@ export default function NotesListScreen() {
     [router],
   );
 
+  // EZE-293: escribir primero. El estado vacio de Biblioteca invita a
+  // crear sin exigir seccion, coleccion ni tags (mismo destino que el FAB).
+  const handleCreateNote = useCallback(() => {
+    void haptic.tap.light();
+    router.push('/notas/new');
+  }, [router]);
+
   const handleSwipeLeft = useCallback(
     (note: Note) => {
       void deleteNote(note.id)
@@ -381,6 +388,13 @@ export default function NotesListScreen() {
                 illustration="sf.line.3.horizontal.decrease.circle"
                 title="Sin notas con este filtro"
                 subtitle="Prueba con otra sección o colección."
+                cta={{
+                  label: 'Mostrar todas',
+                  onPress: () => {
+                    setQuery('');
+                    void setSectionFilter(null);
+                  },
+                }}
               />
             }
             onRefresh={refreshSections}
@@ -399,6 +413,7 @@ export default function NotesListScreen() {
         ) : (
           <SectionedNoteList
             onNotePress={handleNotePress}
+            onCreateNote={handleCreateNote}
             onSwipeLeft={handleSwipeLeft}
             onSwipeRight={handleSwipeRight}
             searchMode={searchMode}

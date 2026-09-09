@@ -26,6 +26,9 @@ export interface SectionedNoteListProps {
   // comportamiento intacto (retrocompat con Batch 3a).
   onSwipeLeft?: (note: Note) => void;
   onSwipeRight?: (note: Note) => void;
+  // EZE-293: escribir primero. CTA opcional solo para biblioteca vacia
+  // (sin busqueda ni filtros). No se usa en estados de filtro/search.
+  onCreateNote?: () => void;
 }
 
 type NoteSection = {
@@ -119,6 +122,7 @@ export function SectionedNoteList({
   onRefresh,
   onSwipeLeft,
   onSwipeRight,
+  onCreateNote,
 }: SectionedNoteListProps) {
   const theme = useTheme();
   const deleteNote = useNotesStore((state) => state.deleteNote);
@@ -171,7 +175,12 @@ export function SectionedNoteList({
               ? 'Prueba con otra búsqueda.'
               : selectedTagIds.length
                 ? 'No hay notas con estos tags.'
-                : 'Tus notas aparecerán aquí.'
+                : 'Escribe tu primera nota, sin elegir nada más.'
+          }
+          cta={
+            !searchMode && selectedTagIds.length === 0 && onCreateNote
+              ? { label: 'Escribir mi primera nota', onPress: onCreateNote }
+              : undefined
           }
         />
       }
