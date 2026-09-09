@@ -20,6 +20,10 @@ export interface Note {
   updated_at: number;
   deleted_at: number | null;
   tags: string[];
+  // Contexto de colecciones. Solo lo rellena searchNotesWithScore
+  // (resultados de búsqueda en Biblioteca); las listas normales lo dejan
+  // ausente para no pagar un JOIN extra sobre toda la colección de notas.
+  collectionNames?: string[];
 }
 
 export interface CreateNoteInput {
@@ -229,6 +233,29 @@ export async function getById(id: number): Promise<Note | null> {
   return note ?? null;
 }
 
+// Topes de la búsqueda: con una Biblioteca grande basta la primera pantalla
+// de resultados bien ordenada por relevancia.
+export const SEARCH_RESULT_LIMIT = 50;
+
+// FTS5 trata comillas, `*` y paréntesis como sintaxis. Escapamos cada TOKEN por
+// separado (no la frase completa) y los unimos con AND: así «arquitectura
+// alpha» encuentra una nota que tiene ambas palabras repartidas, que la frase
+// exacta no encontraba. El último token admite prefijo para que buscar mientras
+// se escribe no devuelva vacío hasta la última letra.
+export function buildFtsQuery(raw: string): string {
+  const tokens = raw
+    .trim()
+    .split(/\s+/)
+    .filter((token) => /[\p{L}\p{N}]/u.test(token))
+    .map((token) => `"${token.replace(/"/g, '""')}"`);
+  if (tokens.length === 0) return '';
+  return tokens
+    .map((quoted, index) =>
+      index === tokens.length - 1 ? `${quoted}*` : `${quoted} AND`,
+    )
+    .join(' ');
+}
+
 // V1: búsqueda FTS5 pura (bm25). Sin capa semántica/embeddings.
 export async function searchNotesWithScore(
   query: string,
@@ -237,8 +264,8 @@ export async function searchNotesWithScore(
   const trimmed = query.trim();
   if (!trimmed) return [];
   if (signal?.aborted) return [];
-  // ponytail: quoted FTS5 phrase search avoids syntax errors from user input.
-  const ftsQuery = `"${trimmed.replace(/"/g, '""')}"`;
+  const ftsQuery = buildFtsQuery(trimmed);
+  if (!ftsQuery) return [];
   const db = await getDb();
   const rows = await db.getAllAsync<NoteRowWithScore>(
     `SELECT n.id, n.title, n.body_md, n.status, n.pinned, n.parent_id,
@@ -253,14 +280,50 @@ export async function searchNotesWithScore(
      JOIN notes n ON n.id = fts.rowid
      WHERE notes_fts MATCH ?
        AND n.deleted_at IS NULL
-     ORDER BY bm25_raw ASC`,
+     ORDER BY bm25_raw ASC
+     LIMIT ?`,
     ftsQuery,
+    SEARCH_RESULT_LIMIT,
   );
+  if (signal?.aborted) return [];
   // ponytail: FTS5 bm25 stays ASC because lower (more negative) means more relevant.
-  return attachTags(rows).map((note, index) => ({
+  const notes = attachTags(rows);
+  const collectionNamesById = await listCollectionNamesByNoteIds(
+    db,
+    notes.map((note) => note.id),
+  );
+  for (const note of notes) {
+    note.collectionNames = collectionNamesById.get(note.id) ?? [];
+  }
+  return notes.map((note, index) => ({
     note,
     bm25: rows[index].bm25_raw,
   }));
+}
+
+// Una sola consulta para todo el lote de resultados. Sin esto, enseñar el
+// contexto de colección en la búsqueda costaría un SELECT por fila (N+1).
+async function listCollectionNamesByNoteIds(
+  db: Awaited<ReturnType<typeof getDb>>,
+  noteIds: number[],
+): Promise<Map<number, string[]>> {
+  const byId = new Map<number, string[]>();
+  if (noteIds.length === 0) return byId;
+  const placeholders = noteIds.map(() => '?').join(', ');
+  const rows = await db.getAllAsync<{ note_id: number; name: string }>(
+    `SELECT nc.note_id AS note_id, c.name AS name
+     FROM note_collections nc
+     JOIN collections c ON c.id = nc.collection_id
+     WHERE nc.note_id IN (${placeholders})
+     ORDER BY c.name COLLATE NOCASE ASC`,
+    ...noteIds,
+  );
+  for (const row of rows) {
+    const names = byId.get(row.note_id);
+    if (names) names.push(row.name);
+    else byId.set(row.note_id, [row.name]);
+  }
+  return byId;
 }
 
 function tagFilterCte(): string {

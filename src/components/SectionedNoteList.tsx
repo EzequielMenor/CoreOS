@@ -59,6 +59,16 @@ function formatRelative(ts: number): string {
   return date.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
 }
 
+// EZE-297: contexto util de un resultado de busqueda. La seccion ya viene en la
+// fila; collectionNames solo lo rellena la busqueda (una query batch), asi que
+// fuera de busqueda esto devuelve null sin coste extra.
+export function buildResultContext(note: Note): string | null {
+  const parts: string[] = [];
+  if (note.section) parts.push(note.section);
+  for (const name of note.collectionNames ?? []) parts.push(name);
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
 function PinIcon({ color }: { color: string }) {
   if (Platform.OS === 'ios') {
     return <SymbolView name="pin.fill" size={IconSize.sm} tintColor={color} />;
@@ -70,7 +80,13 @@ function PinIcon({ color }: { color: string }) {
 // delega al SwipeableRow (Gesture.Race(pan, tap)) para que conviva limpio con
 // el pan. Upgrade path: si se quiere feedback de press, envolver el View con
 // un Gesture.Tap().onBegin()/.onFinalize() que actualice un useSharedValue.
-function NoteRow({ note }: { note: Note }) {
+function NoteRow({
+  note,
+  context,
+}: {
+  note: Note;
+  context?: string | null;
+}) {
   const theme = useTheme();
   const visibleTags = note.tags.slice(0, 3);
   const hiddenTagCount = note.tags.length - visibleTags.length;
@@ -108,6 +124,11 @@ function NoteRow({ note }: { note: Note }) {
           {formatRelative(note.created_at)}
         </Text>
       </View>
+      {context ? (
+        <Text numberOfLines={1} style={[styles.context, { color: theme.notes.text.muted }]}>
+          {context}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -195,7 +216,7 @@ export function SectionedNoteList({
             onNotePress(item.id);
           }}
         >
-          <NoteRow note={item} />
+          <NoteRow context={searchMode ? buildResultContext(item) : null} note={item} />
         </SwipeableRow>
       )}
       renderSectionHeader={({ section }) =>
@@ -249,6 +270,10 @@ const styles = StyleSheet.create({
   timestamp: {
     fontFamily: 'ui-monospace',
     fontSize: 12,
+  },
+  context: {
+    fontSize: 12,
+    letterSpacing: 0,
   },
   pinFallback: {
     fontSize: IconSize.sm,
