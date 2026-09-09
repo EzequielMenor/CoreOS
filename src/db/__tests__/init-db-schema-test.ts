@@ -1,37 +1,18 @@
-/* eslint-disable @typescript-eslint/no-require-imports */
-// Los requires de abajo son deliberados: cada test necesita un registry limpio
-// tras jest.resetModules(), y un import estático quedaría hoisted y cacheado.
-import { mkdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import type { DatabaseSync } from 'node:sqlite';
+import { bootDb, type BootedDb } from '../testing/boot-db';
 
 jest.mock('expo-sqlite', () => jest.requireActual('../testing/sqlite-node-shim'));
 jest.mock('expo-file-system', () => jest.requireActual('../testing/file-system-node-shim'));
 
-type DbModule = typeof import('@/db');
-type NotesModule = typeof import('@/db/queries/notes');
-type TagsModule = typeof import('@/db/queries/tags');
 type RawRow = Record<string, unknown>;
 
-let dbModule!: DbModule;
-let notes!: NotesModule;
-let tags!: TagsModule;
-let db!: Awaited<ReturnType<DbModule['getDb']>>;
-let raw!: DatabaseSync;
-let testNumber = 0;
+let dbModule!: BootedDb['dbModule'];
+let notes!: BootedDb['notes'];
+let tags!: BootedDb['tags'];
+let db!: BootedDb['db'];
+let raw!: BootedDb['raw'];
 
 beforeEach(async () => {
-  const directory = join(tmpdir(), `coreos-db-${process.pid}-${Date.now()}-${testNumber++}`);
-  mkdirSync(directory, { recursive: true });
-  process.env.COREOS_DB_PATH = join(directory, 'coreos.db');
-  jest.resetModules();
-  dbModule = require('@/db') as DbModule;
-  notes = require('@/db/queries/notes') as NotesModule;
-  tags = require('@/db/queries/tags') as TagsModule;
-  await dbModule.initDb();
-  db = await dbModule.getDb();
-  raw = (jest.requireMock('expo-sqlite') as typeof import('../testing/sqlite-node-shim')).__raw();
+  ({ dbModule, notes, tags, db, raw } = await bootDb());
 });
 
 async function count(sql: string): Promise<number> {

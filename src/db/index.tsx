@@ -309,6 +309,20 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
     console.error('[db] FTS5 rebuild failed', err);
   }
 
+  // La recuperación va después de re-asegurar FTS y su rebuild: el UPDATE dispara
+  // notes_au y rederiva notes_fts; antes de crear notes_fts fallaría la migración.
+  const bodyFromContentDone = await db.getFirstAsync<{ value: string | null }>(
+    "SELECT value FROM schema_meta WHERE key='notes_body_from_content_v1'",
+  );
+  if (!bodyFromContentDone?.value) {
+    await db.execAsync(
+      "UPDATE notes SET body_md = content WHERE body_md = '' AND content <> ''",
+    );
+    await db.runAsync(
+      "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('notes_body_from_content_v1', '1')",
+    );
+  }
+
   // Migration v2: tabla note_embeddings (spec design.md §2.3).
   // Auto-recovery (F13): si la key existe pero la tabla no, limpiamos la
   // key para que la creación se reintente en este mismo arranque.
