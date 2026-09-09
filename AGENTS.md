@@ -22,7 +22,8 @@ insert estructurado en SQLite. Sin backend, sin auth, sin multi-tenant.
   *Biblioteca* tiene CRUD + FTS5 + editor Markdown + tags. *Capturar* ejecuta
   el pipeline completo de inbox. *Tareas* tiene CRUD completo en UI.
 - **Repo:** **público** ([github.com/EzequielMenor/CoreOS](https://github.com/EzequielMenor/CoreOS)),
-  single branch (`main`), sin CI configurada.
+  sin CI configurada. Workflow de branches: una branch por ticket padre de
+  Linear (ver §6 «Workflow de branches»). `main` queda como rama estable.
 
 ---
 
@@ -281,6 +282,21 @@ una fase SDD en curso con `design.md` / `spec.md` / `tasks.md`. Las
 decisiones arquitectónicas viven ahí o en comentarios `// ponytail:`
 — no hay ADRs formales en `codebase-memory`.
 
+### Workflow de branches y PRs (tickets Linear)
+
+- **Una branch por ticket padre de Linear**, con el ID del ticket en el
+  nombre: `eze-291-knowledge-library`.
+- Los **subtickets/hijos** (EZE-292, EZE-351, EZE-294, …) se implementan
+  dentro de esa misma branch.
+- **Commits separados y claros por work unit/subticket**, Conventional
+  Commits (`feat:`, `fix:`, `chore:`, …). Nada de commits mezcla.
+- **Una única PR** del ticket padre hacia `main`, con review/verificación
+  (tsc, lint, tests) antes de mergear.
+- `main` es rama estable: solo recibe merges de PRs. **Nunca force-push a
+  `main`.**
+- El historial ya publicado (EZE-292/EZE-351 sobre `main`) queda tal cual:
+  no se reescribe.
+
 ---
 
 ## 7. Testing
@@ -402,6 +418,8 @@ EncryptedSharedPreferences Android). Keys registrados:
 | Regla | Origen |
 |-------|--------|
 | **No force push a `main`** | `CLAUDE.md` |
+| **No commitear directo a `main`** — solo merges de PRs de ticket | Workflow §6 |
+| **No abrir PR sin review/verificación** (tsc, lint, tests) | Workflow §6 |
 | **No secretos hardcoded** | Todas las claves LLM van a `expo-secure-store` |
 | **No `rm`** — usa `mavis-trash` (recuperable) | `CLAUDE.md` |
 | **No commits con `--no-verify`** | `CLAUDE.md` |
@@ -517,3 +535,7 @@ Qualified names para `codebase-memory` (`codebase-memory_search_graph`,
 7. **No commitees** salvo que te lo pidan explícitamente. El slash
    command `/commit` produce commits conventionals.
 8. **No hagas push.** El usuario decide cuándo.
+9. **Trabajá en la branch del ticket padre de Linear** (§6 «Workflow de
+   branches y PRs»): `eze-<id>-<slug>`, commits separados por subticket,
+   una única PR hacia `main` al cerrar el ticket. Si no existe la branch,
+   créala desde `main` actualizado antes de tocar código.
