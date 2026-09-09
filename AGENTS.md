@@ -301,13 +301,35 @@ decisiones arquitectónicas viven ahí o en comentarios `// ponytail:`
 
 ## 7. Testing
 
-**Estado: SUITE MÍNIMA.** Jest 29 + `jest-expo` cubren el pipeline crítico
-de inbox y la normalización de fechas de tareas. No hay tests de UI ni E2E.
+**Estado: 20 suites / 126 tests.** Jest 29 + `jest-expo` con dos capas:
+
+- **Capa query/store**: los tests de `src/db/queries/__tests__/` y
+  `src/stores/__tests__/` correan la capa real contra `node:sqlite` o con
+  mocks acotados por módulo.
+- **Capa esquema real**: `src/db/__tests__/` usa el arnés de
+  `src/db/testing/` (`sqlite-node-shim.ts` + `file-system-node-shim.ts` +
+  `bootDb(seed?)`) para ejecutar el `initDb()` de producción, sus migraciones
+  y sus triggers contra `node:sqlite` (SQLite 3.51.3, mismo motor FTS5 que el
+  dispositivo). Ahí viven los locks de esquema, migraciones legacy,
+  colecciones, payload de listas y regresiones mínimas de Biblioteca.
+  Sigue sin haber tests de UI ni E2E.
 
 Implicaciones para el agente:
 
-- Ejecuta `npm test` tras tocar `src/services/inbox.ts`, `src/services/llm.ts`,
-  `src/db/index.tsx` o `src/db/queries/tareas.ts`.
+- Ejecuta `npm test` tras tocar `src/db/**`, `src/services/inbox.ts`,
+  `src/services/llm.ts`, `src/stores/**` o `src/app/(tabs)/notas/**`.
+- **Reglas del arnés** (`src/db/testing/`):
+  - Los `jest.mock('expo-sqlite'|'expo-file-system')` son file-scoped y se
+    declaran en cada test, nunca en el helper compartido.
+  - `node:sqlite` abre con `PRAGMA foreign_keys = ON`; `expo-sqlite` nunca
+    activa el pragma. Todo test que pruebe cascadas/borrados debe fijar
+    `PRAGMA foreign_keys = OFF` en el handle crudo y asertarlo.
+  - `node:sqlite` rechaza `undefined` y `boolean` como parámetros; el shim
+    los coacciona (`null` / `0|1`).
+  - `backupDatabase()` NO está cubierto (la DB de test vive bajo `tmpdir()`).
+  - No borrar archivos de test: cada `bootDb()` crea un path único.
+- Ejecutar `npx jest src/db/__tests__/init-db-schema-test.ts --runInBand`
+  tras tocar triggers o migraciones: es el lock de los 5 triggers canónicos.
 - Mantén `jest-expo@57.0.1` fijado mientras React Native siga en `0.86.0`;
   releases posteriores de `jest-expo` requieren `@react-native/jest-preset`
   `0.86.3`.
@@ -439,7 +461,7 @@ EncryptedSharedPreferences Android). Keys registrados:
 | 1 | **Drift de timestamps** | Notas v1: `unixepoch()` (s) tras migración `v3_notes_ts_seconds`. Las tablas `gastos` / `tareas` / `habitos_log` / `sueno_log` / `inbox` siguen en ms (`Date.now()`). Documentado en `src/db/queries/notes.ts:6`. |
 | 2 | **SecureStore en web** | `getLLMConfig()` lanza en `SecureStore.*` si la plataforma es web. LLM no usable desde navegador. |
 | 3 | **Pantallas básicas** | `habitos.tsx`, `sueno.tsx` son listas con CRUD limitado en UI. El CRUD real entra vía pipeline LLM. `gastos.tsx` y `tareas.tsx` SÍ tienen CRUD completo en UI. |
-| 4 | **Cobertura acotada** | Jest protege el pipeline crítico y fechas de tareas; UI, SQLite nativo y E2E siguen sin cobertura. |
+| 4 | **Cobertura** | 20 suites / 126 tests: esquema/migraciones/triggers via arnés `node:sqlite`, pipeline inbox, filtros de Biblioteca, colecciones, payload de listas. UI, E2E y SQLite nativo del dispositivo siguen sin cobertura. |
 | 5 | **Mutex en `processPendingInbox`** | `_batchInFlight` global. Tests que disparen batches deben drainar el lock o usar `processInboxItem()` directo. |
 | 6 | **Tabs nativos iOS-only** | `unstable-native-tabs` solo aplica en iOS. Android/web caen a render alternativo. |
 | 7 | **`react-native-reanimated` 4 API** | `useAnimatedGestureHandler` eliminado. Usa `Gesture.Pan()` + worklets. |
@@ -448,6 +470,11 @@ EncryptedSharedPreferences Android). Keys registrados:
 | 10 | **Sin scripts `build`/`typecheck`** | Usa `npx tsc --noEmit` directamente. No hay `npm run build`. |
 | 11 | **`react-native-web` ~0.21.0** | Versión mayor del bundler web; algunas APIs nativas no shimmean (ej. SecureStore). |
 | 12 | **Repo público: cero secrets** | El repo es público. Todo lo sensible va a `expo-secure-store`. Nunca commitear `.env`, API keys ni dumps con datos personales. |
+| 13 | **FKs inertes** | `PRAGMA foreign_keys` nunca se activa en la app y el default de SQLite es OFF: todos los `ON DELETE CASCADE` / `SET NULL` del esquema están muertos. `deleteCollection` limpia `note_collections` explícito en tx por eso. **Decisión: no activar el pragma globalmente** (cambiaría el comportamiento de inserts existentes). Si algún día se endurece, va con fase propia y suite de FKs. |
+| 14 | **NOCASE no cubre Unicode** | SQLite `COLLATE NOCASE` solo pliega ASCII A-Z. La identidad case-insensitive de nombres (tags y colecciones) con acentos vive en JS: `normalizedName()` en `src/db/queries/collections.ts`, compartida por create, rename y la migración de dedupe. No la dupliques en SQL. |
+| 15 | **body_md de listas es preview** | `getSections` / `getNotesBySection` / `getNotesByCollection` devuelven `substr(body_md, 1, 160)` (`LIST_BODY_PREVIEW_SQL`), no el cuerpo completo. Solo `getById` y `searchNotesWithScore` traen el cuerpo entero. No renderices el body de una fila de lista asumiendo que es completo. |
+| 16 | **Precedencia de vistas en Biblioteca** | `pickLibraryView(searchMode, filteredNotes)` en `src/lib/library-view.ts`: búsqueda > browse filtrado > browse seccionado. Los chips de filtro limpian el texto de búsqueda al pulsarse. No reintroduzcas el ternario `filteredNotes !== null` pelado. |
+| 17 | **`notes.content` es columna muerta** | El cuerpo real vive en `body_md`; `content` se escribe por compatibilidad legacy y la migración `notes_body_from_content_v1` lo recupera solo si `body_md` está vacío. No leas `content` como fuente de verdad. |
 
 ### Comentarios que merecen respeto
 
@@ -455,6 +482,11 @@ EncryptedSharedPreferences Android). Keys registrados:
   "mejorar" esa función.
 - `// I1`, `// I2`, `// I3`, `// I4` en `src/services/inbox.ts` → invariantes
   duras. No se negocian.
+- `// ponytail:` en `src/db/testing/file-system-node-shim.ts` → el backup
+  pre-migración NO está cubierto por el arnés de tests.
+- El filtro de tags es **AND** (la nota debe tener todos los tags
+  seleccionados) y la búsqueda **no** acepta parámetros de filtro: decisiones
+  de producto, no cambiarlas en un drive-by.
 - Cambia `// ponytail:` por su upgrade path *solo* cuando la métrica que
   nombra (throughput, latencia, etc.) realmente lo justifique.
 
@@ -517,6 +549,9 @@ Qualified names para `codebase-memory` (`codebase-memory_search_graph`,
 | `CoreOS.src.lib.animations.animations` | `src/lib/animations.ts` | Presets Reanimated + haptics |
 | `CoreOS.src.lib.note-save-gate` | `src/lib/note-save-gate.ts` | Guard de guardado del editor |
 | `CoreOS.src.lib.capture-feedback.trackCaptureOutcome` | `src/lib/capture-feedback.ts` | Toast de destino atribuible a una captura |
+| `CoreOS.src.lib.library-view.pickLibraryView` | `src/lib/library-view.ts` | Precedencia de vistas en Biblioteca: búsqueda > filtrado > seccionado |
+| `CoreOS.src.db.testing.bootDb` | `src/db/testing/boot-db.ts` | Arnés: initDb real bajo node:sqlite para tests de esquema/migraciones |
+| `CoreOS.src.db.queries.collections.normalizedName` | `src/db/queries/collections.ts` | Identidad case-insensitive de colecciones (create, rename, dedupe) |
 
 ---
 

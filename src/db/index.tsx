@@ -241,7 +241,7 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
     await db.execAsync(FTS_TRIGGER_DDL);
 
     // 7. Reconstruir índice FTS5 para reparar cualquier inconsistencia previa.
-    //    No swallow: el rebuild outer (línea ~372) reintenta; si ambos fallan
+    //    No swallow: el rebuild outer (más abajo en este archivo) reintenta; si ambos fallan
     //    se loguea arriba con severidad error.
     try {
       await db.execAsync("INSERT INTO notes_fts(notes_fts) VALUES('rebuild');");
