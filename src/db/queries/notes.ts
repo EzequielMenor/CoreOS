@@ -56,6 +56,9 @@ interface SectionRow extends Omit<NoteLikeRow, 'section'> {
 }
 
 const TAG_SEPARATOR = ' ';
+// La Biblioteca solo renderiza metadatos; este preview acotado evita transportar
+// el markdown completo por el puente JS y conserva el contrato de Note.
+const LIST_BODY_PREVIEW_SQL = 'substr(n.body_md, 1, 160) AS body_md';
 
 // ponytail: el helper se queda como split-only porque las queries ya hacen
 // GROUP_CONCAT inline. Si en el futuro una query devuelve filas sin tags,
@@ -130,7 +133,7 @@ export async function getSections(
           )
       )
     SELECT * FROM (
-      SELECT 'PINNED' AS section, n.id, n.title, n.body_md, n.status,
+      SELECT 'PINNED' AS section, n.id, n.title, ${LIST_BODY_PREVIEW_SQL}, n.status,
              n.pinned, n.parent_id, n.section AS note_section,
              n.content_type, n.created_at, n.updated_at, n.deleted_at,
            (
@@ -142,7 +145,7 @@ export async function getSections(
     WHERE n.deleted_at IS NULL AND n.pinned = 1
       AND (? IS NULL OR n.id IN (SELECT note_id FROM filter_clause))
     UNION ALL
-    SELECT 'TODAY', n.id, n.title, n.body_md, n.status,
+    SELECT 'TODAY', n.id, n.title, ${LIST_BODY_PREVIEW_SQL}, n.status,
            n.pinned, n.parent_id, n.section, n.content_type,
            n.created_at, n.updated_at, n.deleted_at,
            (
@@ -155,7 +158,7 @@ export async function getSections(
       AND n.created_at >= (SELECT v FROM now_d)
       AND (? IS NULL OR n.id IN (SELECT note_id FROM filter_clause))
     UNION ALL
-    SELECT 'YESTERDAY', n.id, n.title, n.body_md, n.status,
+    SELECT 'YESTERDAY', n.id, n.title, ${LIST_BODY_PREVIEW_SQL}, n.status,
            n.pinned, n.parent_id, n.section, n.content_type,
            n.created_at, n.updated_at, n.deleted_at,
            (
@@ -169,7 +172,7 @@ export async function getSections(
       AND n.created_at <  (SELECT v FROM now_d)
       AND (? IS NULL OR n.id IN (SELECT note_id FROM filter_clause))
     UNION ALL
-    SELECT 'THIS_WEEK', n.id, n.title, n.body_md, n.status,
+    SELECT 'THIS_WEEK', n.id, n.title, ${LIST_BODY_PREVIEW_SQL}, n.status,
            n.pinned, n.parent_id, n.section, n.content_type,
            n.created_at, n.updated_at, n.deleted_at,
            (
@@ -183,7 +186,7 @@ export async function getSections(
       AND n.created_at <  (SELECT v FROM yesterday)
       AND (? IS NULL OR n.id IN (SELECT note_id FROM filter_clause))
     UNION ALL
-    SELECT 'EARLIER', n.id, n.title, n.body_md, n.status,
+    SELECT 'EARLIER', n.id, n.title, ${LIST_BODY_PREVIEW_SQL}, n.status,
            n.pinned, n.parent_id, n.section, n.content_type,
            n.created_at, n.updated_at, n.deleted_at,
            (
@@ -345,7 +348,7 @@ function tagFilterCte(): string {
 
 function noteWithTagsSelect(): string {
   return `
-    n.id, n.title, n.body_md, n.status, n.pinned, n.parent_id,
+    n.id, n.title, ${LIST_BODY_PREVIEW_SQL}, n.status, n.pinned, n.parent_id,
     n.section, n.content_type, n.created_at, n.updated_at, n.deleted_at,
     (
       SELECT GROUP_CONCAT(t.name, ' ')
