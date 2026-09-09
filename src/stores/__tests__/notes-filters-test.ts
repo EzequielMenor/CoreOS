@@ -75,6 +75,19 @@ describe('notes filter actions', () => {
     expect(notesRepo.getSections).toHaveBeenCalledWith([9, 4]);
   });
 
+  it('clears resolved search state when clearing all filters', async () => {
+    await useNotesStore.getState().searchWithAbort('algo');
+    await useNotesStore.getState().clearAllFilters();
+
+    expect(useNotesStore.getState()).toEqual(
+      expect.objectContaining({
+        searchQuery: '',
+        searchResults: [],
+        filteredNotes: null,
+      }),
+    );
+  });
+
   it('keeps the baseline cost of one repository read per tag toggle', async () => {
     await useNotesStore.getState().toggleTagFilter(1);
     await useNotesStore.getState().toggleTagFilter(2);
