@@ -5,11 +5,6 @@ import WebView from 'react-native-webview';
 import type { GraphEdge, GraphNode } from '@/db/queries/graph';
 import { useTheme } from '@/hooks/use-theme';
 
-// Ancho de la franja nativa del borde izquierdo de iOS (px). El strip no implementa el
-// swipe-to-back: solo saca al WKWebView del hit-testing ahi, para que el
-// UIScreenEdgePanGestureRecognizer del stack nativo reciba el touch (screens ya le da
-// precedencia sobre scroll pans, pero los recognizers internos de WebKit se la roban).
-const EDGE_SWIPE_ZONE = 30;
 export const RECENTER_SCRIPT = 'window.__coreosNoteGraphRecenter?.(); true;';
 
 export interface NoteGraphViewProps {
@@ -605,13 +600,6 @@ export function NoteGraphView({
           source={{ html }}
           style={[styles.webView, { backgroundColor: theme.notes.bg.base }]}
         />
-        {Platform.OS === 'ios' ? (
-          <>
-            {/* Franja nativa del borde izquierdo: el touch que arranca ahi pega en este
-                View y no en el WKWebView, asi el gesto de back del stack nativo lo reconoce. */}
-            <View style={styles.edgeSwipeZone} />
-          </>
-        ) : null}
       </View>
     </View>
   );
@@ -643,13 +631,6 @@ const styles = StyleSheet.create({
   },
   webView: {
     flex: 1,
-  },
-  edgeSwipeZone: {
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
-    top: 0,
-    width: EDGE_SWIPE_ZONE,
   },
   fallback: {
     alignItems: 'center',

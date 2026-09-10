@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -8,8 +9,10 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 
 import { getGraphData, type GraphData, type GraphEdge } from '@/db/queries/graph';
+import { EDGE_SWIPE_WIDTH, shouldEdgeSwipeBack } from '@/lib/edge-swipe';
 import { NoteSpacing, Typography } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 
@@ -78,6 +81,38 @@ export default function GraphScreen() {
     [router],
   );
 
+  // Un solo back por gesto fisico: onUpdate puede seguir disparandose mientras
+  // translationX crece tras superar el umbral. Estado (no ref): la regla
+  // react-hooks/refs no permite leer refs en los closures del GestureDetector.
+  const [lastEdgeBackAt, setLastEdgeBackAt] = useState(0);
+  const handleEdgeSwipeBack = useCallback(() => {
+    const now = Date.now();
+    if (now - lastEdgeBackAt < 600) return;
+    setLastEdgeBackAt(now);
+    router.back();
+  }, [lastEdgeBackAt, router]);
+
+  // Edge gesture nativo (RNGH): los primeros 30 px del borde izquierdo son del back.
+  // El pop nativo del stack esta deshabilitado en esta pantalla (gestureEnabled: false)
+  // para que haya un unico dueno del edge swipe; el back ejecuta router.back().
+  const edgePan = useMemo(
+    () =>
+      Gesture.Pan()
+        // Gesto de navegacion: sin worklets. Los callbacks corren en JS runtime
+        // (si no, al llamar shouldEdgeSwipeBack crashea el UI Runtime).
+        .runOnJS(true)
+        .activeOffsetX(12)
+        .failOffsetY([-24, 24])
+        .onUpdate((event) => {
+          if (
+            shouldEdgeSwipeBack(event.translationX, event.translationY, event.velocityX, event.velocityY)
+          ) {
+            handleEdgeSwipeBack();
+          }
+        }),
+    [handleEdgeSwipeBack],
+  );
+
   return (
     <SafeAreaView
       edges={['bottom']}
@@ -87,9 +122,9 @@ export default function GraphScreen() {
         options={{
           headerShown: true,
           title: headerTitle,
-          headerBackTitle: 'Notas',
-          // ponytail: iOS edge swipe nativo del stack; el canvas libera la franja del borde (NoteGraphView).
-          gestureEnabled: true,
+          // ponytail: pop nativo deshabilitado en ESTA pantalla: el edge swipe del
+          // borde tiene un unico dueno (GestureDetector del strip + router.back()).
+          gestureEnabled: false,
           headerStyle: { backgroundColor: theme.notes.bg.base },
           headerTintColor: theme.notes.accent.primary,
           headerTitleStyle: { color: theme.notes.text.primary, fontWeight: '600' },
@@ -152,6 +187,19 @@ export default function GraphScreen() {
           )}
         </>
       )}
+      {Platform.OS === 'ios' ? (
+        // Franja del borde izquierdo (iOS): territorio exclusivo de navegacion.
+        // Un gesto que empieza aca es del back; uno que empieza fuera es del grafo.
+        <GestureDetector gesture={edgePan}>
+          <View
+            // Superficie RN nativa real: box-only la convierte en el unico hit-test
+            // target de su area; collapsable={false} evita el aplanado en Android/plataforma.
+            pointerEvents="box-only"
+            collapsable={false}
+            style={styles.edgeSwipeZone}
+          />
+        </GestureDetector>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -159,6 +207,14 @@ export default function GraphScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  edgeSwipeZone: {
+    bottom: 0,
+    left: 0,
+    position: 'absolute',
+    top: 0,
+    width: EDGE_SWIPE_WIDTH,
+    zIndex: 3,
   },
   filtersScroll: {
     flexGrow: 0,

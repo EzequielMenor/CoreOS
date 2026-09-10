@@ -252,7 +252,7 @@ export default function NotesListScreen() {
           hitSlop={8}
           onPress={() => {
             void haptic.tap.light();
-            router.push('/grafo' as never);
+            router.push('/notas/grafo' as never);
           }}
           style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
         >

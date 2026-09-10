@@ -119,7 +119,7 @@ export default function NoteDetailScreen() {
   const openGraph = useCallback(() => {
     if (note == null) return;
     void haptic.tap.light();
-    router.push({ pathname: '/grafo' as never, params: { noteId: String(note.id) } });
+    router.push({ pathname: '/notas/grafo' as never, params: { noteId: String(note.id) } });
   }, [note, router]);
 
   const handleRestore = useCallback(() => {
