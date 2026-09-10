@@ -73,7 +73,7 @@ insert estructurado en SQLite. Sin backend, sin auth, sin multi-tenant.
 ### Capas
 
 ```
-src/app/         ENTRY     — 9 rutas de pantalla, expo-router file-based, 3 NativeTabs
+src/app/         ENTRY     — 13 rutas de pantalla, expo-router file-based, 3 NativeTabs
 src/stores/      CORE      — Zustand: notes, tags, ui, tareas (gastos/sueno huérfanos, sin UI)
 src/components/  INTERNO   — UI compartidos + briefing (Cabecera, TareasPrioritarias)
 src/db/          CORE      — singleton SQLite (hotspot, fan-in alto)
@@ -189,6 +189,10 @@ CoreOS/
 | `/notas/new` | `src/app/(tabs)/notas/new.tsx` | — | Stack push |
 | `/notas/[id]` | `src/app/(tabs)/notas/[id].tsx` | — | Stack |
 | `/notas/[id]/edit` | `src/app/(tabs)/notas/[id]/edit.tsx` | — | Stack (oculta) |
+| `/notas/grafo` | `src/app/(tabs)/notas/grafo.tsx` | Grafo | Stack (Notas) |
+| `/colecciones` | `src/app/colecciones/index.tsx` | Colecciones | Stack (secundaria) |
+| `/colecciones/[id]` | `src/app/colecciones/[id].tsx` | — | Stack |
+| `/capturas-pendientes` | `src/app/capturas-pendientes.tsx` | Hoy | Stack (secundaria) |
 | `/tareas` | `src/app/tareas.tsx` | Tareas | Stack (secundaria) |
 | `/ajustes` | `src/app/ajustes.tsx` | Ajustes | Stack (secundaria) |
 | `/capture-share` | `src/app/capture-share.tsx` | Share intent | Stack (oculta) |
@@ -301,7 +305,7 @@ decisiones arquitectónicas viven ahí o en comentarios `// ponytail:`
 
 ## 7. Testing
 
-**Estado: 20 suites / 126 tests.** Jest 29 + `jest-expo` con dos capas:
+**Estado: 24 suites / 148 tests.** Jest 29 + `jest-expo` con dos capas:
 
 - **Capa query/store**: los tests de `src/db/queries/__tests__/` y
   `src/stores/__tests__/` correan la capa real contra `node:sqlite` o con
@@ -461,7 +465,7 @@ EncryptedSharedPreferences Android). Keys registrados:
 | 1 | **Drift de timestamps** | Notas v1: `unixepoch()` (s) tras migración `v3_notes_ts_seconds`. Las tablas `gastos` / `tareas` / `habitos_log` / `sueno_log` / `inbox` siguen en ms (`Date.now()`). Documentado en `src/db/queries/notes.ts:6`. |
 | 2 | **SecureStore en web** | `getLLMConfig()` lanza en `SecureStore.*` si la plataforma es web. LLM no usable desde navegador. |
 | 3 | **Pantallas básicas** | `habitos.tsx`, `sueno.tsx` son listas con CRUD limitado en UI. El CRUD real entra vía pipeline LLM. `gastos.tsx` y `tareas.tsx` SÍ tienen CRUD completo en UI. |
-| 4 | **Cobertura** | 20 suites / 126 tests: esquema/migraciones/triggers via arnés `node:sqlite`, pipeline inbox, filtros de Biblioteca, colecciones, payload de listas. UI, E2E y SQLite nativo del dispositivo siguen sin cobertura. |
+| 4 | **Cobertura** | 24 suites / 148 tests: esquema/migraciones/triggers via arnés `node:sqlite`, pipeline inbox, filtros de Biblioteca, colecciones, payload de listas, grafo. UI, E2E y SQLite nativo del dispositivo siguen sin cobertura. |
 | 5 | **Mutex en `processPendingInbox`** | `_batchInFlight` global. Tests que disparen batches deben drainar el lock o usar `processInboxItem()` directo. |
 | 6 | **Tabs nativos iOS-only** | `unstable-native-tabs` solo aplica en iOS. Android/web caen a render alternativo. |
 | 7 | **`react-native-reanimated` 4 API** | `useAnimatedGestureHandler` eliminado. Usa `Gesture.Pan()` + worklets. |
