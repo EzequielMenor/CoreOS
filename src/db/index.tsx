@@ -474,6 +474,22 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
     }
   }
 
+  // Limpieza única de tags huérfanos ya existentes en dispositivos publicados.
+  const orphanCleanupDone = await db.getFirstAsync<{ value: string | null }>(
+    "SELECT value FROM schema_meta WHERE key='tags_orphan_cleanup_v1'",
+  );
+  if (!orphanCleanupDone?.value) {
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(`
+        DELETE FROM tags
+        WHERE NOT EXISTS (SELECT 1 FROM note_tags WHERE note_tags.tag_id = tags.id)
+      `);
+      await db.runAsync(
+        "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('tags_orphan_cleanup_v1', '1')",
+      );
+    });
+  }
+
   // Migración v4 (EZE-260): tabla audio_captures para persistir audio y estado
   // antes de la transcripción y permitir reintentos.
   const v4AudioDone = await db.getFirstAsync<{ value: string | null }>(
