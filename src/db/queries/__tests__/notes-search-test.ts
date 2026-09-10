@@ -2,7 +2,7 @@
 // FTS5 del dispositivo). Cubre EZE-297 «buscar por título y contenido de todas
 // las notas»: la query se envolvía entera como frase exacta, así que
 // «arquitectura alpha» no encontraba una nota que tenía ambas palabras separadas.
-import type { DatabaseSync } from 'node:sqlite';
+import type { RawSqlite } from '../../testing/sqlite-node-shim';
 import { searchNotesWithScore } from '../notes';
 import { FTS_REINDEX_SQL } from '../../fts-triggers';
 
@@ -10,10 +10,10 @@ import { FTS_REINDEX_SQL } from '../../fts-triggers';
 // NO se copian a mano: se importa el mismo FTS_TRIGGER_DDL que ejecuta initDb,
 // así el test no puede quedarse verde con triggers de producción rotos.
 jest.mock('@/db', () => {
-  const { DatabaseSync } = jest.requireActual('node:sqlite');
+  const { createNodeDatabase } = jest.requireActual('../../testing/sqlite-node-shim') as typeof import('../../testing/sqlite-node-shim');
   const { FTS_TRIGGER_DDL } = jest.requireActual('../../fts-triggers') as typeof import('../../fts-triggers');
 
-  const sqlite = new DatabaseSync(':memory:');
+  const sqlite = createNodeDatabase(':memory:');
   sqlite.exec(`
     CREATE TABLE notes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,7 +77,7 @@ function insertNote(
   body: string,
   options: { section?: string; deletedAt?: number } = {},
 ): number {
-  const { __db } = jest.requireMock('@/db') as { __db: DatabaseSync };
+  const { __db } = jest.requireMock('@/db') as { __db: RawSqlite };
   return Number(
     __db
       .prepare(
@@ -96,7 +96,7 @@ function insertNote(
 }
 
 function tagNote(noteId: number, name: string): void {
-  const { __db } = jest.requireMock('@/db') as { __db: DatabaseSync };
+  const { __db } = jest.requireMock('@/db') as { __db: RawSqlite };
   const tagRow = __db
     .prepare(
       'INSERT INTO tags (name) VALUES (?) ON CONFLICT DO UPDATE SET name = excluded.name RETURNING id',
@@ -107,7 +107,7 @@ function tagNote(noteId: number, name: string): void {
 }
 
 function putInCollection(noteId: number, collectionName: string): void {
-  const { __db } = jest.requireMock('@/db') as { __db: DatabaseSync };
+  const { __db } = jest.requireMock('@/db') as { __db: RawSqlite };
   const info = __db
     .prepare('INSERT INTO collections (name, created_at, updated_at) VALUES (?, ?, ?) RETURNING id')
     .get(collectionName, NOW, NOW) as { id: number };
@@ -120,7 +120,7 @@ function putInCollection(noteId: number, collectionName: string): void {
 
 function resetTables(): void {
   const { __db, __stats } = jest.requireMock('@/db') as {
-    __db: DatabaseSync;
+    __db: RawSqlite;
     __stats: { getAllAsync: number };
   };
   __stats.getAllAsync = 0;
@@ -186,7 +186,7 @@ describe('searchNotesWithScore with real FTS5 (node:sqlite)', () => {
     const tagged = insertNote('Apunte etiquetado', 'cuerpo neutro');
     tagNote(tagged, 'retirable');
 
-    const { __db } = jest.requireMock('@/db') as { __db: DatabaseSync };
+    const { __db } = jest.requireMock('@/db') as { __db: RawSqlite };
     __db.prepare('UPDATE notes SET title = ? WHERE id = ?').run('Apunte actualizado', tagged);
 
     const taggedHits = await searchNotesWithScore('retirable');
@@ -204,7 +204,7 @@ describe('searchNotesWithScore with real FTS5 (node:sqlite)', () => {
     const stale = insertNote('Nota anterior al fix', 'cuerpo neutro');
     tagNote(stale, 'legado');
 
-    const { __db } = jest.requireMock('@/db') as { __db: DatabaseSync };
+    const { __db } = jest.requireMock('@/db') as { __db: RawSqlite };
     __db.prepare("UPDATE notes_fts SET tags_names = '' WHERE rowid = ?").run(stale);
 
     const beforeHits = await searchNotesWithScore('legado');

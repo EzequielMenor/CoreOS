@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 import { bootDb, type BootedDb } from '../../testing/boot-db';
-import type { DatabaseSync } from 'node:sqlite';
+import type { RawSqlite } from '../../testing/sqlite-node-shim';
 
 jest.mock('expo-sqlite', () => jest.requireActual('../../testing/sqlite-node-shim'));
 jest.mock('expo-file-system', () => jest.requireActual('../../testing/file-system-node-shim'));
@@ -12,7 +12,7 @@ function graphQueries(): GraphModule {
 }
 
 function insertRelation(
-  raw: DatabaseSync,
+  raw: RawSqlite,
   source: number,
   target: number,
   options: {

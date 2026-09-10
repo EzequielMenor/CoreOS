@@ -313,9 +313,10 @@ decisiones arquitectónicas viven ahí o en comentarios `// ponytail:`
 - **Capa esquema real**: `src/db/__tests__/` usa el arnés de
   `src/db/testing/` (`sqlite-node-shim.ts` + `file-system-node-shim.ts` +
   `bootDb(seed?)`) para ejecutar el `initDb()` de producción, sus migraciones
-  y sus triggers contra `node:sqlite` (SQLite 3.51.3, mismo motor FTS5 que el
-  dispositivo). Ahí viven los locks de esquema, migraciones legacy,
-  colecciones, payload de listas y regresiones mínimas de Biblioteca.
+  y sus triggers contra **better-sqlite3** (dev-only, con FTS5 real; el
+  `node:sqlite` del runner de CI no compila `ENABLE_FTS5`). Expo-sqlite sigue
+  siendo el motor de la app. Ahí viven los locks de esquema, migraciones
+  legacy, colecciones, payload de listas y regresiones mínimas de Biblioteca.
   Sigue sin haber tests de UI ni E2E.
 
 Implicaciones para el agente:
@@ -325,8 +326,9 @@ Implicaciones para el agente:
 - **Reglas del arnés** (`src/db/testing/`):
   - Los `jest.mock('expo-sqlite'|'expo-file-system')` son file-scoped y se
     declaran en cada test, nunca en el helper compartido.
-  - `node:sqlite` abre con `PRAGMA foreign_keys = ON`; `expo-sqlite` nunca
-    activa el pragma. Todo test que pruebe cascadas/borrados debe fijar
+  - El backend del arnés (better-sqlite3) abre con `PRAGMA foreign_keys = ON`
+    (misma fidelidad que node:sqlite); `expo-sqlite` nunca activa el pragma.
+    Todo test que pruebe cascadas/borrados debe fijar
     `PRAGMA foreign_keys = OFF` en el handle crudo y asertarlo.
   - `node:sqlite` rechaza `undefined` y `boolean` como parámetros; el shim
     los coacciona (`null` / `0|1`).

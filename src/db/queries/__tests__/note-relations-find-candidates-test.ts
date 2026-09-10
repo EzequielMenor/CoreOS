@@ -3,15 +3,15 @@
 // descartaba el top de FTS porque la normalización |bm25|*0.05 da un piso de
 // 0.1 cuando bm25 es minúsculo (SQLite clampa el IDF si el término aparece en
 // >= 50% de los documentos).
-import type { DatabaseSync } from 'node:sqlite';
+import type { RawSqlite } from '../../testing/sqlite-node-shim';
 import { findCandidateNotes } from '../note-relations';
 
 // Esquema fidélito a notes_org_v1 / note_relations_v1 (src/db/index.tsx).
 // El factory expone __db para que el test inserte las notas del escenario.
 jest.mock('@/db', () => {
-  const { DatabaseSync } = jest.requireActual('node:sqlite');
+  const { createNodeDatabase } = jest.requireActual('../../testing/sqlite-node-shim') as typeof import('../../testing/sqlite-node-shim');
 
-  const sqlite = new DatabaseSync(':memory:');
+  const sqlite = createNodeDatabase(':memory:');
   sqlite.exec(`
     CREATE TABLE notes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,7 +79,7 @@ describe('findCandidateNotes with real FTS5 (node:sqlite)', () => {
   let unrelatedId: number;
 
   beforeEach(() => {
-    const mocked = jest.requireMock('@/db') as { __db: DatabaseSync };
+    const mocked = jest.requireMock('@/db') as { __db: RawSqlite };
     const insert = mocked.__db.prepare(
       'INSERT INTO notes (title, body_md, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
     );

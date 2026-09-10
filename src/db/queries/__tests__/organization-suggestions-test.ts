@@ -1,18 +1,18 @@
 // Sugerencias de organización basadas solo en datos locales (EZE-297). Sin LLM:
 // una Biblioteca sin API key configurada tiene que seguir recibiendo ayudas.
 // node:sqlite = mismo motor SQLite del dispositivo.
-import type { DatabaseSync } from 'node:sqlite';
+import type { RawSqlite } from '../../testing/sqlite-node-shim';
 
 import { suggestOrganization } from '../organization-suggestions';
 
 interface Harness {
-  __db: DatabaseSync;
+  __db: RawSqlite;
 }
 
 jest.mock('@/db', () => {
-  const { DatabaseSync } = jest.requireActual('node:sqlite');
+  const { createNodeDatabase } = jest.requireActual('../../testing/sqlite-node-shim') as typeof import('../../testing/sqlite-node-shim');
 
-  const sqlite = new DatabaseSync(':memory:');
+  const sqlite = createNodeDatabase(':memory:');
   sqlite.exec(`
     CREATE TABLE notes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

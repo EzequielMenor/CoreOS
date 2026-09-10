@@ -2,9 +2,9 @@
 // Los requires de abajo son deliberados: cada test necesita un registry limpio
 // tras jest.resetModules(), y un import estático quedaría hoisted y cacheado.
 import { mkdirSync } from 'node:fs';
-import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createNodeDatabase, type RawSqlite } from './sqlite-node-shim';
 
 type DbModule = typeof import('@/db');
 type NotesModule = typeof import('@/db/queries/notes');
@@ -14,7 +14,7 @@ type CollectionsModule = typeof import('@/db/queries/collections');
 export interface BootedDb {
   path: string;
   db: Awaited<ReturnType<DbModule['getDb']>>;
-  raw: DatabaseSync;
+  raw: RawSqlite;
   notes: NotesModule;
   tags: TagsModule;
   collections: CollectionsModule;
@@ -25,14 +25,14 @@ let testNumber = 0;
 
 // Las fábricas de jest.mock son locales al fichero de test: deben permanecer allí
 // porque los mocks declarados en este helper no se aplicarían al consumidor.
-export async function bootDb(seed?: (raw: DatabaseSync) => void): Promise<BootedDb> {
+export async function bootDb(seed?: (raw: RawSqlite) => void): Promise<BootedDb> {
   const directory = join(tmpdir(), `coreos-db-${process.pid}-${Date.now()}-${testNumber++}`);
   mkdirSync(directory, { recursive: true });
   const path = join(directory, 'coreos.db');
   process.env.COREOS_DB_PATH = path;
 
   if (seed) {
-    const seededDb = new DatabaseSync(path);
+    const seededDb = createNodeDatabase(path);
     seed(seededDb);
     seededDb.close();
   }

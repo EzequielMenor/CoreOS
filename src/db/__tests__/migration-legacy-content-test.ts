@@ -1,4 +1,4 @@
-import { DatabaseSync } from 'node:sqlite';
+import type { RawSqlite } from '../testing/sqlite-node-shim';
 
 import { bootDb } from '../testing/boot-db';
 
@@ -9,7 +9,7 @@ describe('migración del contenido legacy de notas', () => {
   // Esquema pre-v1 real (el que crea el bloque legacy de initDb) con las aristas
   // que importan: body_md añadido por ALTER, dos notas con cuerpo propio, una con
   // content vacío y una con content de solo espacios.
-  function seedLegacyNotes(seedDb: DatabaseSync): void {
+  function seedLegacyNotes(seedDb: RawSqlite): void {
     seedDb.exec(`
       CREATE TABLE notes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
