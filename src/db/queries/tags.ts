@@ -69,4 +69,9 @@ export async function setTagsForNoteNoTx(
       row.id,
     );
   }
+  // Elimina tags que quedaron sin notas tras el reemplazo.
+  await db.runAsync(`
+    DELETE FROM tags
+    WHERE NOT EXISTS (SELECT 1 FROM note_tags WHERE note_tags.tag_id = tags.id)
+  `);
 }

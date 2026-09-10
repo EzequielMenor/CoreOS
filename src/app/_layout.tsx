@@ -197,6 +197,8 @@ export default function TabLayout() {
             <Stack.Screen name="tareas" options={{ ...secondaryHeaderOptions, title: 'Tareas' }} />
             <Stack.Screen name="ajustes" options={{ ...secondaryHeaderOptions, title: 'Ajustes' }} />
             <Stack.Screen name="capturas-pendientes" options={{ ...secondaryHeaderOptions, title: 'Capturas pendientes' }} />
+            <Stack.Screen name="colecciones/index" options={{ ...secondaryHeaderOptions, title: 'Colecciones' }} />
+            <Stack.Screen name="colecciones/[id]" options={{ ...secondaryHeaderOptions, headerBackTitle: 'Colecciones' }} />
           </Stack>
           {/* ponytail: topOffset hardcoded (notch iPhone 14-16 ≈ 47pt + 8pt padding). Las screens que necesiten más espacio usan useSafeAreaInsets(). */}
           <Toast config={toastConfig} topOffset={55} />

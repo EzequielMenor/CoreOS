@@ -18,6 +18,7 @@ import { listNoteSections } from '@/db/queries/collections';
 import type { Note } from '@/db/queries/notes';
 import { useTheme } from '@/hooks/use-theme';
 import { haptic } from '@/lib/animations';
+import { pickLibraryView } from '@/lib/library-view';
 import { waitForPendingSave } from '@/lib/note-save-gate';
 import { useCollectionsStore } from '@/stores/collections';
 import { useNotesStore } from '@/stores/notes';
@@ -125,12 +126,16 @@ export default function NotesListScreen() {
   const tags = useTagsStore((state) => state.tags);
   const collections = useCollectionsStore((state) => state.collections);
   const fetchCollections = useCollectionsStore((state) => state.fetchCollections);
+  const fetchTags = useTagsStore((state) => state.fetchTags);
   const toggleTagFilter = useNotesStore((state) => state.toggleTagFilter);
+  const clearTagFilter = useNotesStore((state) => state.clearTagFilter);
+  const clearAllFilters = useNotesStore((state) => state.clearAllFilters);
 
   const [sectionNames, setSectionNames] = useState<string[]>([]);
   const [query, setQuery] = useState('');
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchMode = query.trim().length > 0;
+  const libraryView = pickLibraryView(searchMode, filteredNotes);
 
   const refreshSections = useCallback(() => {
     void fetchSections();
@@ -138,12 +143,16 @@ export default function NotesListScreen() {
 
   const refreshOrganizationFilters = useCallback(async () => {
     try {
-      const [nextSections] = await Promise.all([listNoteSections(), fetchCollections()]);
+      const [nextSections] = await Promise.all([
+        listNoteSections(),
+        fetchCollections(),
+        fetchTags(),
+      ]);
       setSectionNames(nextSections);
     } catch {
       setSectionNames([]);
     }
-  }, [fetchCollections]);
+  }, [fetchCollections, fetchTags]);
 
   useFocusEffect(
     useCallback(() => {
@@ -192,6 +201,13 @@ export default function NotesListScreen() {
     [router],
   );
 
+  // EZE-293: escribir primero. El estado vacio de Biblioteca invita a
+  // crear sin exigir seccion, coleccion ni tags (mismo destino que el FAB).
+  const handleCreateNote = useCallback(() => {
+    void haptic.tap.light();
+    router.push('/notas/new');
+  }, [router]);
+
   const handleSwipeLeft = useCallback(
     (note: Note) => {
       void deleteNote(note.id)
@@ -229,26 +245,48 @@ export default function NotesListScreen() {
 
   const headerRight = useCallback(
     () => (
-      <Pressable
-        accessibilityLabel="Ajustes"
-        accessibilityRole="button"
-        hitSlop={8}
-        onPress={() => {
-          void haptic.tap.light();
-          router.push('/ajustes');
-        }}
-        style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
-      >
-        {Platform.OS === 'ios' ? (
-          <SymbolView
-            name="gearshape"
-            size={IconSize.md}
-            tintColor={theme.notes.text.primary}
-          />
-        ) : (
-          <Text style={{ color: theme.notes.text.primary, fontSize: 16 }}>⚙️</Text>
-        )}
-      </Pressable>
+      <View style={styles.headerActions}>
+        <Pressable
+          accessibilityLabel="Grafo de notas"
+          accessibilityRole="button"
+          hitSlop={8}
+          onPress={() => {
+            void haptic.tap.light();
+            router.push('/notas/grafo' as never);
+          }}
+          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+        >
+          {Platform.OS === 'ios' ? (
+            <SymbolView
+              name="point.3.connected.trianglepath.dotted"
+              size={IconSize.md}
+              tintColor={theme.notes.text.primary}
+            />
+          ) : (
+            <Text style={{ color: theme.notes.text.primary, fontSize: 16 }}>⌘</Text>
+          )}
+        </Pressable>
+        <Pressable
+          accessibilityLabel="Ajustes"
+          accessibilityRole="button"
+          hitSlop={8}
+          onPress={() => {
+            void haptic.tap.light();
+            router.push('/ajustes');
+          }}
+          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+        >
+          {Platform.OS === 'ios' ? (
+            <SymbolView
+              name="gearshape"
+              size={IconSize.md}
+              tintColor={theme.notes.text.primary}
+            />
+          ) : (
+            <Text style={{ color: theme.notes.text.primary, fontSize: 16 }}>⚙️</Text>
+          )}
+        </Pressable>
+      </View>
     ),
     [router, theme],
   );
@@ -347,11 +385,8 @@ export default function NotesListScreen() {
             selected={selectedTagIds.length === 0}
             onPress={() => {
               if (selectedTagIds.length === 0) return;
-              void Promise.all(
-                selectedTagIds.map((tagId) =>
-                  useNotesStore.getState().toggleTagFilter(tagId),
-                ),
-              );
+              setQuery('');
+              void clearTagFilter();
             }}
           />
           {tags.map((tag) => (
@@ -361,6 +396,7 @@ export default function NotesListScreen() {
               variant="filter"
               selected={selectedTagIds.includes(tag.id)}
               onPress={() => {
+                setQuery('');
                 void toggleTagFilter(tag.id);
               }}
             />
@@ -368,12 +404,12 @@ export default function NotesListScreen() {
         </ScrollView>
       ) : null}
       <View style={styles.listWrap}>
-        {filteredNotes !== null ? (
+        {libraryView === 'filtered' ? (
           <FlatList
             contentContainerStyle={
-              filteredNotes.length ? styles.filteredContent : styles.emptyContent
+              filteredNotes?.length ? styles.filteredContent : styles.emptyContent
             }
-            data={filteredNotes}
+            data={filteredNotes ?? []}
             keyExtractor={(note) => String(note.id)}
             keyboardShouldPersistTaps="handled"
             ListEmptyComponent={
@@ -381,6 +417,13 @@ export default function NotesListScreen() {
                 illustration="sf.line.3.horizontal.decrease.circle"
                 title="Sin notas con este filtro"
                 subtitle="Prueba con otra sección o colección."
+                cta={{
+                  label: 'Mostrar todas',
+                  onPress: () => {
+                    setQuery('');
+                    void clearAllFilters();
+                  },
+                }}
               />
             }
             onRefresh={refreshSections}
@@ -399,6 +442,7 @@ export default function NotesListScreen() {
         ) : (
           <SectionedNoteList
             onNotePress={handleNotePress}
+            onCreateNote={handleCreateNote}
             onSwipeLeft={handleSwipeLeft}
             onSwipeRight={handleSwipeRight}
             searchMode={searchMode}
@@ -446,6 +490,11 @@ export default function NotesListScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  headerActions: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: NoteSpacing.sm,
   },
   searchWrap: {
     paddingHorizontal: NoteSpacing.md,

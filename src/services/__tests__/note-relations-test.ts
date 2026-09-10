@@ -5,7 +5,7 @@ import {
   getRelatedNotes,
   upsertRelation,
 } from '@/db/queries/note-relations';
-import { getActiveLLMConfig } from '../llm-providers';
+import { PROVIDERS, getActiveLLMConfig } from '../llm-providers';
 
 jest.mock('@/db/queries/notes', () => ({
   getById: jest.fn(),
@@ -18,6 +18,7 @@ jest.mock('@/db/queries/note-relations', () => ({
 }));
 
 jest.mock('../llm-providers', () => ({
+  ...jest.requireActual('../llm-providers'),
   getActiveLLMConfig: jest.fn(),
 }));
 
@@ -86,6 +87,8 @@ describe('note-relations service', () => {
 
   it('uses LLM when configured and persists refined suggestions', async () => {
     mockGetActiveLLMConfig.mockResolvedValue({
+      providerId: 'minimax',
+      provider: PROVIDERS.minimax,
       baseUrl: 'https://api.test.com/v1',
       apiKey: 'test-key',
       model: 'test-model',
@@ -126,6 +129,8 @@ describe('note-relations service', () => {
 
   it('falls back to local heuristic candidates when LLM fails or is unavailable', async () => {
     mockGetActiveLLMConfig.mockResolvedValue({
+      providerId: 'minimax',
+      provider: PROVIDERS.minimax,
       baseUrl: 'https://api.test.com/v1',
       apiKey: 'test-key',
       model: 'test-model',

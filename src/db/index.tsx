@@ -3,6 +3,8 @@ import { File } from 'expo-file-system';
 import { RouteType } from '../services/llm';
 import type { InboxErrorCode } from '../services/inbox-diagnostics';
 import { setTagsForNoteNoTx } from './queries/tags';
+import { normalizedName } from './queries/collections';
+import { FTS_REINDEX_SQL, FTS_TRIGGER_DDL } from './fts-triggers';
 
 import { getDb, closeDb, DB_NAME, DB_DIR } from './client';
 export { getDb, closeDb, DB_NAME, DB_DIR };
@@ -236,84 +238,10 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
       FROM notes`);
 
     // 6. Triggers nuevos (mantienen consistencia notes ↔ notes_fts ↔ tags_names).
-    //    Los triggers referencian body_md y pasan el COALESCE exacto de tags_names en la claúsula 'delete'
-    //    para evitar corrupción de FTS5 / SQL logic error en UPDATE.
-    //    ponytail: note_tags PK es (note_id, tag_id), no tiene columna id.
-    //    Para excluir la fila recién insertada del aggregate 'delete' usamos
-    //    tag_id (la PK compuesta garantiza unicidad por par). El bug previo
-    //    referenciaba nt.id y new.id, que no existen en note_tags, reventando
-    //    UPDATE con "SQL logic error" en finalizeAsync.
-    await db.execAsync(`
-      DROP TRIGGER IF EXISTS notes_ai;
-      DROP TRIGGER IF EXISTS notes_ad;
-      DROP TRIGGER IF EXISTS notes_au;
-      DROP TRIGGER IF EXISTS note_tags_ai;
-      DROP TRIGGER IF EXISTS note_tags_ad;
-
-      CREATE TRIGGER notes_ai AFTER INSERT ON notes BEGIN
-        INSERT INTO notes_fts(rowid, title, body_md, tags_names)
-        VALUES (new.id, new.title, new.body_md,
-          COALESCE((SELECT GROUP_CONCAT(t.name, ' ')
-            FROM note_tags nt JOIN tags t ON t.id=nt.tag_id
-            WHERE nt.note_id=new.id), ''));
-      END;
-
-      CREATE TRIGGER notes_ad AFTER DELETE ON notes BEGIN
-        INSERT INTO notes_fts(notes_fts, rowid, title, body_md, tags_names)
-        VALUES ('delete', old.id, old.title, old.body_md,
-          COALESCE((SELECT GROUP_CONCAT(t.name, ' ')
-            FROM note_tags nt JOIN tags t ON t.id=nt.tag_id
-            WHERE nt.note_id=old.id), ''));
-      END;
-
-      CREATE TRIGGER notes_au AFTER UPDATE OF title, body_md ON notes BEGIN
-        INSERT INTO notes_fts(notes_fts, rowid, title, body_md, tags_names)
-        VALUES ('delete', old.id, old.title, old.body_md,
-          COALESCE((SELECT GROUP_CONCAT(t.name, ' ')
-            FROM note_tags nt JOIN tags t ON t.id=nt.tag_id
-            WHERE nt.note_id=old.id), ''));
-        INSERT INTO notes_fts(rowid, title, body_md, tags_names)
-        VALUES (new.id, new.title, new.body_md,
-          COALESCE((SELECT GROUP_CONCAT(t.name, ' ')
-            FROM note_tags nt JOIN tags t ON t.id=nt.tag_id
-            WHERE nt.note_id=new.id), ''));
-      END;
-
-      CREATE TRIGGER note_tags_ai AFTER INSERT ON note_tags BEGIN
-        UPDATE notes SET updated_at = (unixepoch()) WHERE id = new.note_id;
-        INSERT INTO notes_fts(notes_fts, rowid, title, body_md, tags_names)
-          VALUES ('delete', new.note_id,
-            (SELECT title FROM notes WHERE id=new.note_id),
-            (SELECT body_md FROM notes WHERE id=new.note_id),
-            COALESCE((SELECT GROUP_CONCAT(t.name, ' ') FROM tags t
-              JOIN note_tags nt ON nt.tag_id=t.id WHERE nt.note_id=new.note_id AND nt.tag_id != new.tag_id), ''));
-        INSERT INTO notes_fts(rowid, title, body_md, tags_names)
-          VALUES (new.note_id,
-            (SELECT title FROM notes WHERE id=new.note_id),
-            (SELECT body_md FROM notes WHERE id=new.note_id),
-            COALESCE((SELECT GROUP_CONCAT(t.name, ' ') FROM tags t
-              JOIN note_tags nt ON nt.tag_id=t.id WHERE nt.note_id=new.note_id), ''));
-      END;
-
-      CREATE TRIGGER note_tags_ad AFTER DELETE ON note_tags BEGIN
-        UPDATE notes SET updated_at = (unixepoch()) WHERE id = old.note_id;
-        INSERT INTO notes_fts(notes_fts, rowid, title, body_md, tags_names)
-          VALUES ('delete', old.note_id,
-            (SELECT title FROM notes WHERE id=old.note_id),
-            (SELECT body_md FROM notes WHERE id=old.note_id),
-            COALESCE((SELECT GROUP_CONCAT(t.name, ' ') FROM tags t
-              JOIN note_tags nt ON nt.tag_id=t.id WHERE nt.note_id=old.note_id), ''));
-        INSERT INTO notes_fts(rowid, title, body_md, tags_names)
-          VALUES (old.note_id,
-            (SELECT title FROM notes WHERE id=old.note_id),
-            (SELECT body_md FROM notes WHERE id=old.note_id),
-            COALESCE((SELECT GROUP_CONCAT(t.name, ' ') FROM tags t
-              JOIN note_tags nt ON nt.tag_id=t.id WHERE nt.note_id=old.note_id), ''));
-      END;
-    `);
+    await db.execAsync(FTS_TRIGGER_DDL);
 
     // 7. Reconstruir índice FTS5 para reparar cualquier inconsistencia previa.
-    //    No swallow: el rebuild outer (línea ~372) reintenta; si ambos fallan
+    //    No swallow: el rebuild outer (más abajo en este archivo) reintenta; si ambos fallan
     //    se loguea arriba con severidad error.
     try {
       await db.execAsync("INSERT INTO notes_fts(notes_fts) VALUES('rebuild');");
@@ -329,46 +257,23 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
   }
 
   // Re-asegurar TODOS los triggers FTS5 en cada initDb.
-  // notes_fts NO es una tabla 'external content', almacena sus propios datos.
-  // Por lo tanto, no se debe usar INSERT INTO notes_fts(notes_fts) VALUES ('delete'...).
-  // Se usan operaciones DML estándar (INSERT, UPDATE, DELETE).
-  await db.execAsync(`
-    DROP TRIGGER IF EXISTS notes_ai;
-    DROP TRIGGER IF EXISTS notes_ad;
-    DROP TRIGGER IF EXISTS notes_au;
-    DROP TRIGGER IF EXISTS note_tags_ai;
-    DROP TRIGGER IF EXISTS note_tags_ad;
+  await db.execAsync(FTS_TRIGGER_DDL);
 
-    CREATE TRIGGER notes_ai AFTER INSERT ON notes BEGIN
-      INSERT INTO notes_fts(rowid, title, body_md, tags_names)
-      VALUES (new.id, new.title, new.body_md,
-        COALESCE((SELECT GROUP_CONCAT(t.name, ' ')
-          FROM note_tags nt JOIN tags t ON t.id=nt.tag_id
-          WHERE nt.note_id=new.id), ''));
-    END;
-
-    CREATE TRIGGER notes_ad AFTER DELETE ON notes BEGIN
-      DELETE FROM notes_fts WHERE rowid = old.id;
-    END;
-
-    CREATE TRIGGER notes_au AFTER UPDATE OF title, body_md ON notes BEGIN
-      UPDATE notes_fts
-      SET title = new.title,
-          body_md = new.body_md,
-          tags_names = COALESCE((SELECT GROUP_CONCAT(t.name, ' ')
-            FROM note_tags nt JOIN tags t ON t.id=nt.tag_id
-            WHERE nt.note_id=new.id), '')
-      WHERE rowid = new.id;
-    END;
-
-    CREATE TRIGGER note_tags_ai AFTER INSERT ON note_tags BEGIN
-      UPDATE notes SET updated_at = (unixepoch()) WHERE id = new.note_id;
-    END;
-
-    CREATE TRIGGER note_tags_ad AFTER DELETE ON note_tags BEGIN
-      UPDATE notes SET updated_at = (unixepoch()) WHERE id = old.note_id;
-    END;
-  `);
+  // Curación v3: reconstruir tags_names tras corregir los triggers de etiquetas.
+  const ftsTagHeal = await db.getFirstAsync<{ value: string | null }>(
+    "SELECT value FROM schema_meta WHERE key='notes_fts_tag_heal_v3'",
+  );
+  if (!ftsTagHeal) {
+    try {
+      await db.execAsync(FTS_REINDEX_SQL);
+      await db.runAsync(
+        "INSERT INTO schema_meta (key, value) VALUES ('notes_fts_tag_heal_v3', '1')",
+      );
+      console.log('[db] FTS5 tag index healed and repopulated');
+    } catch (err) {
+      console.error('[db] FTS5 tag heal failed:', err);
+    }
+  }
 
   // Healing de una sola vez: limpiar el FTS corrupto y llenarlo de nuevo con DML normal.
   const ftsHeal = await db.getFirstAsync<{ value: string | null }>(
@@ -394,8 +299,8 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
     }
   }
 
-  // Rebuild incondicional: repara el índice FTS5 corrupto por los triggers
-  // viejos. Idempotente — en una DB sana es un no-op rápido (~ms).
+  // Rebuild incondicional: re-tokeniza el contenido que ya está en notes_fts;
+  // la curación versionada notes_fts_tag_heal_v3 actualiza tags_names desde notes.
   // ponytail: si falla aquí es seña de trigger corrupto o schema_meta
   // desincronizado. Subimos a error para no enmascarar la causa raíz.
   try {
@@ -403,6 +308,20 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
     console.log('[db] FTS5 rebuild complete');
   } catch (err) {
     console.error('[db] FTS5 rebuild failed', err);
+  }
+
+  // La recuperación va después de re-asegurar FTS y su rebuild: el UPDATE dispara
+  // notes_au y rederiva notes_fts; antes de crear notes_fts fallaría la migración.
+  const bodyFromContentDone = await db.getFirstAsync<{ value: string | null }>(
+    "SELECT value FROM schema_meta WHERE key='notes_body_from_content_v1'",
+  );
+  if (!bodyFromContentDone?.value) {
+    await db.execAsync(
+      "UPDATE notes SET body_md = content WHERE body_md = '' AND content <> ''",
+    );
+    await db.runAsync(
+      "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('notes_body_from_content_v1', '1')",
+    );
   }
 
   // Migration v2: tabla note_embeddings (spec design.md §2.3).
@@ -555,6 +474,22 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
     }
   }
 
+  // Limpieza única de tags huérfanos ya existentes en dispositivos publicados.
+  const orphanCleanupDone = await db.getFirstAsync<{ value: string | null }>(
+    "SELECT value FROM schema_meta WHERE key='tags_orphan_cleanup_v1'",
+  );
+  if (!orphanCleanupDone?.value) {
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(`
+        DELETE FROM tags
+        WHERE NOT EXISTS (SELECT 1 FROM note_tags WHERE note_tags.tag_id = tags.id)
+      `);
+      await db.runAsync(
+        "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('tags_orphan_cleanup_v1', '1')",
+      );
+    });
+  }
+
   // Migración v4 (EZE-260): tabla audio_captures para persistir audio y estado
   // antes de la transcripción y permitir reintentos.
   const v4AudioDone = await db.getFirstAsync<{ value: string | null }>(
@@ -636,6 +571,125 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
       );
     });
   }
+
+  const collectionsDescriptionDone = await db.getFirstAsync<{ value: string | null }>(
+    "SELECT value FROM schema_meta WHERE key='collections_description_v1'",
+  );
+  const collectionCols = await db.getAllAsync<{ name: string }>(
+    'PRAGMA table_info(collections)',
+  );
+  const hasCollectionDescription = collectionCols.some(
+    (column) => column.name === 'description',
+  );
+
+  if (collectionsDescriptionDone?.value && !hasCollectionDescription) {
+    await db.runAsync(
+      "DELETE FROM schema_meta WHERE key='collections_description_v1'",
+    );
+  }
+  if (!collectionsDescriptionDone?.value || !hasCollectionDescription) {
+    if (!hasCollectionDescription) await backupDatabase();
+
+    await db.withTransactionAsync(async () => {
+      if (!hasCollectionDescription) {
+        await db.execAsync('ALTER TABLE collections ADD COLUMN description TEXT;');
+      }
+      await db.runAsync(
+        "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('collections_description_v1', '1')",
+      );
+    });
+  }
+
+  const collectionsNameDedupeDone = await db.getFirstAsync<{ value: string | null }>(
+    "SELECT value FROM schema_meta WHERE key='collections_name_dedupe_v1'",
+  );
+  if (!collectionsNameDedupeDone?.value) {
+    await db.withExclusiveTransactionAsync(async () => {
+      type CollectionNameRow = { id: number; name: string };
+      type MembershipRow = {
+        note_id: number;
+        collection_id: number;
+        position: number | null;
+        added_at: number;
+      };
+      type CollectionGroup = {
+        keeper: CollectionNameRow;
+        absorbed: CollectionNameRow[];
+      };
+
+      const collectionRows = await db.getAllAsync<CollectionNameRow>(
+        'SELECT id, name FROM collections ORDER BY id ASC',
+      );
+      const membershipRows = await db.getAllAsync<MembershipRow>(
+        'SELECT note_id, collection_id, position, added_at FROM note_collections',
+      );
+      const groups = new Map<string, CollectionGroup>();
+
+      for (const row of collectionRows) {
+        const key = normalizedName(row.name);
+        const group = groups.get(key);
+        if (group) group.absorbed.push(row);
+        else groups.set(key, { keeper: row, absorbed: [] });
+      }
+
+      for (const group of groups.values()) {
+        if (group.absorbed.length === 0) continue;
+
+        const groupIds = [group.keeper.id, ...group.absorbed.map((row) => row.id)];
+        const groupIdSet = new Set(groupIds);
+        const mergedMemberships = new Map<number, MembershipRow>();
+
+        for (const row of membershipRows) {
+          if (!groupIdSet.has(row.collection_id)) continue;
+          const existing = mergedMemberships.get(row.note_id);
+          if (!existing) {
+            mergedMemberships.set(row.note_id, { ...row, collection_id: group.keeper.id });
+            continue;
+          }
+          if (row.position !== null && (existing.position === null || row.position < existing.position)) {
+            existing.position = row.position;
+          }
+          if (row.added_at < existing.added_at) existing.added_at = row.added_at;
+        }
+
+        if (group.keeper.name !== group.keeper.name.trim()) {
+          await db.runAsync(
+            'UPDATE collections SET name = TRIM(name) WHERE id = ?',
+            group.keeper.id,
+          );
+        }
+        const groupPlaceholders = groupIds.map(() => '?').join(', ');
+        await db.runAsync(
+          `DELETE FROM note_collections WHERE collection_id IN (${groupPlaceholders})`,
+          ...groupIds,
+        );
+        for (const membership of mergedMemberships.values()) {
+          await db.runAsync(
+            'INSERT INTO note_collections (note_id, collection_id, position, added_at) VALUES (?, ?, ?, ?)',
+            membership.note_id,
+            group.keeper.id,
+            membership.position,
+            membership.added_at,
+          );
+        }
+        const absorbedPlaceholders = group.absorbed.map(() => '?').join(', ');
+        await db.runAsync(
+          `DELETE FROM collections WHERE id IN (${absorbedPlaceholders})`,
+          ...group.absorbed.map((row) => row.id),
+        );
+      }
+
+      await db.runAsync(
+        "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('collections_name_dedupe_v1', '1')",
+      );
+    });
+  }
+
+  // El índice debe crearse después de deduplicar: si no, los duplicados existentes
+  // abortan initDb y rompen el arranque.
+  await db.execAsync(
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_collections_name_unique ON collections (name COLLATE NOCASE)',
+  );
 
   // Migración para relaciones entre notas (EZE-297 / Related Notes).
   const relationsDone = await db.getFirstAsync<{ value: string | null }>(

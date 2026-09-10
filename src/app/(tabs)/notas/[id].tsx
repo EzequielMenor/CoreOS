@@ -18,6 +18,7 @@ import { SymbolView } from 'expo-symbols';
 import {
   addNoteToCollection,
   getNoteCollections,
+  listNoteSections,
   removeNoteFromCollection,
 } from '@/db/queries/collections';
 import type { CollectionRow } from '@/db/queries/collections';
@@ -31,6 +32,7 @@ import { useNotesStore } from '@/stores/notes';
 
 import { EmptyState } from '@/components/EmptyState';
 import { MarkdownView } from '@/components/MarkdownView';
+import { OrganizationSuggestions } from '@/components/OrganizationSuggestions';
 import { RelatedNotesSection } from '@/components/RelatedNotesSection';
 import { TagPill } from '@/components/TagPill';
 
@@ -59,6 +61,7 @@ export default function NoteDetailScreen() {
   const noteId = Number(params.id);
   const restoreNote = useNotesStore((state) => state.restoreNote);
   const setNoteSection = useCollectionsStore((state) => state.setNoteSection);
+  const createCollection = useCollectionsStore((state) => state.create);
   const collections = useCollectionsStore((state) => state.collections);
   const fetchCollections = useCollectionsStore((state) => state.fetchCollections);
   const [note, setNote] = useState<Note | null>(null);
@@ -67,7 +70,10 @@ export default function NoteDetailScreen() {
   const [notFound, setNotFound] = useState(false);
   const [sectionModalVisible, setSectionModalVisible] = useState(false);
   const [sectionDraft, setSectionDraft] = useState('');
+  const [sectionOptions, setSectionOptions] = useState<string[]>([]);
   const [collectionModalVisible, setCollectionModalVisible] = useState(false);
+  const [newCollectionName, setNewCollectionName] = useState('');
+  const [creatingCollection, setCreatingCollection] = useState(false);
   const [savingSection, setSavingSection] = useState(false);
 
   useFocusEffect(
@@ -110,6 +116,12 @@ export default function NoteDetailScreen() {
     router.push(`/notas/${note.id}/edit`);
   }, [note, router]);
 
+  const openGraph = useCallback(() => {
+    if (note == null) return;
+    void haptic.tap.light();
+    router.push({ pathname: '/notas/grafo' as never, params: { noteId: String(note.id) } });
+  }, [note, router]);
+
   const handleRestore = useCallback(() => {
     if (note == null) return;
     void restoreNote(note.id).catch((error: unknown) => {
@@ -118,10 +130,13 @@ export default function NoteDetailScreen() {
   }, [note, restoreNote]);
 
   const openSectionEditor = useCallback(() => {
-        if (note == null) return;
-        setSectionDraft(note.section ?? '');
-        setSectionModalVisible(true);
-      }, [note]);
+    if (note == null) return;
+    setSectionDraft(note.section ?? '');
+    setSectionModalVisible(true);
+    void listNoteSections()
+      .then(setSectionOptions)
+      .catch(() => setSectionOptions([]));
+  }, [note]);
 
       const saveSection = useCallback(async () => {
         if (note == null || savingSection) return;
@@ -141,15 +156,25 @@ export default function NoteDetailScreen() {
         }
       }, [note, savingSection, sectionDraft, setNoteSection]);
 
-      const removeSection = useCallback(() => {
-        setSectionDraft('');
-        void setNoteSection(noteId, null)
-          .then(() => getById(noteId))
-          .then(setNote)
-          .catch(() => {
-            Alert.alert('No se pudo quitar', 'Inténtalo de nuevo.');
-          });
-      }, [noteId, setNoteSection]);
+  const removeSection = useCallback(() => {
+    if (note == null) return;
+    Alert.alert('Quitar sección', 'La nota quedará suelta, sin sección.', [
+      { text: 'Cancelar', style: 'cancel' },
+      {
+        text: 'Quitar',
+        style: 'destructive',
+        onPress: () => {
+          setSectionDraft('');
+          void setNoteSection(noteId, null)
+            .then(() => getById(noteId))
+            .then(setNote)
+            .catch(() => {
+              Alert.alert('No se pudo quitar', 'Inténtalo de nuevo.');
+            });
+        },
+      },
+    ]);
+  }, [note, noteId, setNoteSection]);
 
       const openCollectionEditor = useCallback(() => {
         setCollectionModalVisible(true);
@@ -174,21 +199,56 @@ export default function NoteDetailScreen() {
         [note, noteCollections],
       );
 
-      const removeCollection = useCallback(
-        (collectionId: number) => {
-          if (note == null) return;
-          void removeNoteFromCollection(note.id, collectionId)
-            .then(() => {
-              setNoteCollections((current) =>
-                current.filter((collection) => collection.id !== collectionId),
-              );
-            })
-            .catch(() => {
-              Alert.alert('No se pudo quitar', 'Inténtalo de nuevo.');
-            });
-        },
-        [note],
+  const removeCollection = useCallback(
+    (collectionId: number, collectionName: string) => {
+      if (note == null) return;
+      Alert.alert(
+        `Quitar de ${collectionName}`,
+        'La nota seguirá existiendo, solo sale de la colección.',
+        [
+          { text: 'Cancelar', style: 'cancel' },
+          {
+            text: 'Quitar',
+            style: 'destructive',
+            onPress: () => {
+              void removeNoteFromCollection(note.id, collectionId)
+                .then(() => {
+                  setNoteCollections((current) =>
+                    current.filter((collection) => collection.id !== collectionId),
+                  );
+                })
+                .catch(() => {
+                  Alert.alert('No se pudo quitar', 'Inténtalo de nuevo.');
+                });
+            },
+          },
+        ],
       );
+    },
+    [note],
+  );
+
+  const createCollectionAndAdd = useCallback(async () => {
+    if (note == null || creatingCollection) return;
+    const trimmed = newCollectionName.trim();
+    if (!trimmed) {
+      Alert.alert('Falta el nombre', 'Escribe un nombre para la colección.');
+      return;
+    }
+    setCreatingCollection(true);
+    try {
+      const id = await createCollection(trimmed);
+      await addNoteToCollection(note.id, id);
+      setNoteCollections(await getNoteCollections(note.id));
+      setNewCollectionName('');
+      setCollectionModalVisible(false);
+      void haptic.notify.success();
+    } catch {
+      Alert.alert('No se pudo crear', 'Inténtalo de nuevo.');
+    } finally {
+      setCreatingCollection(false);
+    }
+  }, [createCollection, creatingCollection, newCollectionName, note]);
 
       if (loading) {
     return (
@@ -292,14 +352,25 @@ export default function NoteDetailScreen() {
                     <Text style={[styles.organizationLabel, { color: theme.notes.text.secondary }]}>Colecciones</Text>
                     <View style={styles.collectionChips}>
                       {noteCollections.map((collection) => (
-                        <Pressable
-                          key={collection.id}
-                          accessibilityLabel={`Quitar de ${collection.name}`}
-                          accessibilityRole="button"
-                          onPress={() => removeCollection(collection.id)}
-                        >
-                          <TagPill name={collection.name} variant="display" />
-                        </Pressable>
+                        <View key={collection.id} style={styles.collectionChip}>
+                          <Pressable
+                            accessibilityLabel={`Abrir colección ${collection.name}`}
+                            accessibilityRole="button"
+                            hitSlop={8}
+                            onPress={() => router.push(`/colecciones/${collection.id}`)}
+                          >
+                            <TagPill name={collection.name} variant="display" />
+                          </Pressable>
+                          <Pressable
+                            accessibilityLabel={`Quitar de ${collection.name}`}
+                            accessibilityRole="button"
+                            hitSlop={8}
+                            onPress={() => removeCollection(collection.id, collection.name)}
+                            style={styles.collectionRemove}
+                          >
+                            <Text style={[styles.collectionRemoveText, { color: theme.notes.text.muted }]}>×</Text>
+                          </Pressable>
+                        </View>
                       ))}
                       <TagPill
                         name="Añadir"
@@ -327,6 +398,32 @@ export default function NoteDetailScreen() {
               )}
             </View>
 
+            <OrganizationSuggestions
+              note={note}
+              onCollectionsUpdated={setNoteCollections}
+              onNoteUpdated={setNote}
+            />
+            <Pressable
+              accessibilityLabel="Abrir grafo de esta nota"
+              accessibilityRole="button"
+              onPress={openGraph}
+              style={({ pressed }) => [
+                styles.graphButton,
+                {
+                  borderColor: theme.notes.border.subtle,
+                  opacity: pressed ? 0.7 : 1,
+                },
+              ]}
+            >
+              {Platform.OS === 'ios' ? (
+                <SymbolView
+                  name="point.3.connected.trianglepath.dotted"
+                  size={IconSize.sm}
+                  tintColor={theme.notes.text.accent}
+                />
+              ) : null}
+              <Text style={[styles.graphButtonText, { color: theme.notes.text.accent }]}>Ver grafo de conexiones</Text>
+            </Pressable>
             <RelatedNotesSection noteId={note.id} />
           </ScrollView>
         <Modal
@@ -346,6 +443,19 @@ export default function NoteDetailScreen() {
                     ]}
                   >
                     <Text style={[styles.modalTitle, { color: theme.notes.text.primary }]}>Sección</Text>
+                    {sectionOptions.length > 0 ? (
+                      <View style={styles.optionChips}>
+                        {sectionOptions.map((option) => (
+                          <TagPill
+                            key={option}
+                            name={option}
+                            variant="filter"
+                            selected={sectionDraft.trim() === option}
+                            onPress={() => setSectionDraft(option)}
+                          />
+                        ))}
+                      </View>
+                    ) : null}
                     <TextInput
                       autoFocus
                       onChangeText={setSectionDraft}
@@ -419,9 +529,49 @@ export default function NoteDetailScreen() {
                     ) : (
                       <Text style={[styles.organizationEmpty, { color: theme.notes.text.muted }]}>No hay colecciones todavía.</Text>
                     )}
-                    <Pressable onPress={() => setCollectionModalVisible(false)}>
-                      <Text style={[styles.modalAction, { color: theme.notes.text.muted }]}>Cerrar</Text>
-                    </Pressable>
+                        <TextInput
+                          onChangeText={setNewCollectionName}
+                          onSubmitEditing={() => void createCollectionAndAdd()}
+                          placeholder="Nueva colección…"
+                          placeholderTextColor={theme.notes.text.muted}
+                          returnKeyType="done"
+                          selectionColor={theme.notes.accent.primary}
+                          style={[
+                            styles.input,
+                            {
+                              backgroundColor: theme.notes.bg.surface,
+                              borderColor: theme.notes.border.subtle,
+                              color: theme.notes.text.primary,
+                            },
+                          ]}
+                          value={newCollectionName}
+                        />
+                        <View style={styles.modalActions}>
+                          <Pressable
+                            accessibilityLabel="Crear colección y añadir nota"
+                            accessibilityRole="button"
+                            disabled={creatingCollection || !newCollectionName.trim()}
+                            hitSlop={8}
+                            onPress={() => void createCollectionAndAdd()}
+                          >
+                            <Text
+                              style={[
+                                styles.modalAction,
+                                {
+                                  color:
+                                    creatingCollection || !newCollectionName.trim()
+                                      ? theme.notes.text.muted
+                                      : theme.notes.text.accent,
+                                },
+                              ]}
+                            >
+                              Crear y añadir
+                            </Text>
+                          </Pressable>
+                          <Pressable onPress={() => setCollectionModalVisible(false)}>
+                            <Text style={[styles.modalAction, { color: theme.notes.text.muted }]}>Cerrar</Text>
+                          </Pressable>
+                        </View>
                   </View>
                 </View>
               </Modal>
@@ -480,6 +630,24 @@ const styles = StyleSheet.create({
     organizationAction: {
       fontSize: Typography.caption.size,
       fontWeight: '600',
+    },
+    collectionChip: {
+      alignItems: 'center',
+      flexDirection: 'row',
+    },
+    collectionRemove: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      minHeight: 28,
+      minWidth: 24,
+    },
+    collectionRemoveText: {
+      fontSize: 18,
+    },
+    optionChips: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: NoteSpacing.xs,
     },
     collectionChips: {
       alignItems: 'center',
@@ -547,6 +715,21 @@ const styles = StyleSheet.create({
     fontSize: Typography.body.size,
     fontStyle: 'italic',
     lineHeight: Typography.body.lineHeight,
+  },
+  graphButton: {
+    alignItems: 'center',
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: NoteSpacing.sm,
+    justifyContent: 'center',
+    marginTop: NoteSpacing.lg,
+    paddingHorizontal: NoteSpacing.md,
+    paddingVertical: NoteSpacing.sm,
+  },
+  graphButtonText: {
+    fontSize: Typography.caption.size,
+    fontWeight: '600',
   },
   headerAction: {
     fontSize: Typography.body.size,

@@ -291,20 +291,30 @@ export async function findCandidateNotes(
         ftsQuery,
       );
 
-      for (const row of ftsRows) {
+      // ponytail: score por ranking, no por |bm25| absoluto. bm25 depende del
+      // tamaño del corpus y SQLite clampa el IDF (~1e-6) cuando un término
+      // aparece en >= 50% de los documentos; con umbral absoluto sobre |bm25|
+      // el top de FTS quedaba siempre por debajo del gate y el LLM jamás
+      // llegaba a ver candidatos. Aquí solo se RETRIEVA y ORDENA (top-10);
+      // la decisión final la toma el LLM (o el gate 0.25 del service en
+      // modo sin IA), que es lo que mantiene el control de ruido.
+      const rankedFts = [...ftsRows].sort((a, b) => a.bm25_score - b.bm25_score);
+      let ftsRank = 0;
+      for (const row of rankedFts) {
         if (excludedIds.has(row.rowid)) continue;
         const note = await getById(row.rowid);
         if (!note || note.deleted_at != null) continue;
 
-        const normalizedBm25 = Math.max(0.1, Math.min(0.4, Math.abs(row.bm25_score) * 0.05));
+        const ftsScore = Math.max(0.1, 0.4 - ftsRank * 0.05);
+        ftsRank += 1;
         const existing = candidateMap.get(row.rowid);
         if (existing) {
-          existing.score += normalizedBm25;
+          existing.score += ftsScore;
           existing.reasons.push('Coincidencia temática en contenido');
         } else {
           candidateMap.set(row.rowid, {
             note,
-            score: normalizedBm25,
+            score: ftsScore,
             reasons: ['Coincidencia temática en contenido'],
           });
         }

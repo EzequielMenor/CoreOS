@@ -20,6 +20,10 @@ export interface Note {
   updated_at: number;
   deleted_at: number | null;
   tags: string[];
+  // Contexto de colecciones. Solo lo rellena searchNotesWithScore
+  // (resultados de búsqueda en Biblioteca); las listas normales lo dejan
+  // ausente para no pagar un JOIN extra sobre toda la colección de notas.
+  collectionNames?: string[];
 }
 
 export interface CreateNoteInput {
@@ -52,6 +56,9 @@ interface SectionRow extends Omit<NoteLikeRow, 'section'> {
 }
 
 const TAG_SEPARATOR = ' ';
+// La Biblioteca solo renderiza metadatos; este preview acotado evita transportar
+// el markdown completo por el puente JS y conserva el contrato de Note.
+const LIST_BODY_PREVIEW_SQL = 'substr(n.body_md, 1, 160) AS body_md';
 
 // ponytail: el helper se queda como split-only porque las queries ya hacen
 // GROUP_CONCAT inline. Si en el futuro una query devuelve filas sin tags,
@@ -126,7 +133,7 @@ export async function getSections(
           )
       )
     SELECT * FROM (
-      SELECT 'PINNED' AS section, n.id, n.title, n.body_md, n.status,
+      SELECT 'PINNED' AS section, n.id, n.title, ${LIST_BODY_PREVIEW_SQL}, n.status,
              n.pinned, n.parent_id, n.section AS note_section,
              n.content_type, n.created_at, n.updated_at, n.deleted_at,
            (
@@ -138,7 +145,7 @@ export async function getSections(
     WHERE n.deleted_at IS NULL AND n.pinned = 1
       AND (? IS NULL OR n.id IN (SELECT note_id FROM filter_clause))
     UNION ALL
-    SELECT 'TODAY', n.id, n.title, n.body_md, n.status,
+    SELECT 'TODAY', n.id, n.title, ${LIST_BODY_PREVIEW_SQL}, n.status,
            n.pinned, n.parent_id, n.section, n.content_type,
            n.created_at, n.updated_at, n.deleted_at,
            (
@@ -151,7 +158,7 @@ export async function getSections(
       AND n.created_at >= (SELECT v FROM now_d)
       AND (? IS NULL OR n.id IN (SELECT note_id FROM filter_clause))
     UNION ALL
-    SELECT 'YESTERDAY', n.id, n.title, n.body_md, n.status,
+    SELECT 'YESTERDAY', n.id, n.title, ${LIST_BODY_PREVIEW_SQL}, n.status,
            n.pinned, n.parent_id, n.section, n.content_type,
            n.created_at, n.updated_at, n.deleted_at,
            (
@@ -165,7 +172,7 @@ export async function getSections(
       AND n.created_at <  (SELECT v FROM now_d)
       AND (? IS NULL OR n.id IN (SELECT note_id FROM filter_clause))
     UNION ALL
-    SELECT 'THIS_WEEK', n.id, n.title, n.body_md, n.status,
+    SELECT 'THIS_WEEK', n.id, n.title, ${LIST_BODY_PREVIEW_SQL}, n.status,
            n.pinned, n.parent_id, n.section, n.content_type,
            n.created_at, n.updated_at, n.deleted_at,
            (
@@ -179,7 +186,7 @@ export async function getSections(
       AND n.created_at <  (SELECT v FROM yesterday)
       AND (? IS NULL OR n.id IN (SELECT note_id FROM filter_clause))
     UNION ALL
-    SELECT 'EARLIER', n.id, n.title, n.body_md, n.status,
+    SELECT 'EARLIER', n.id, n.title, ${LIST_BODY_PREVIEW_SQL}, n.status,
            n.pinned, n.parent_id, n.section, n.content_type,
            n.created_at, n.updated_at, n.deleted_at,
            (
@@ -229,6 +236,34 @@ export async function getById(id: number): Promise<Note | null> {
   return note ?? null;
 }
 
+// Topes de la búsqueda: con una Biblioteca grande basta la primera pantalla
+// de resultados bien ordenada por relevancia.
+export const SEARCH_RESULT_LIMIT = 50;
+
+// Pesos de bm25 por columna (title, body_md, tags_names). Sin esto, una nota
+// que repite la palabra cinco veces en el cuerpo le gana a la que se LLAMA así,
+// y en una biblioteca de conocimiento el título es la señal más fuerte.
+const SEARCH_BM25_WEIGHTS = '10.0, 1.0, 1.0';
+
+// FTS5 trata comillas, `*` y paréntesis como sintaxis. Escapamos cada TOKEN por
+// separado (no la frase completa) y los unimos con AND: así «arquitectura
+// alpha» encuentra una nota que tiene ambas palabras repartidas, que la frase
+// exacta no encontraba. El último token admite prefijo para que buscar mientras
+// se escribe no devuelva vacío hasta la última letra.
+export function buildFtsQuery(raw: string): string {
+  const tokens = raw
+    .trim()
+    .split(/\s+/)
+    .filter((token) => /[\p{L}\p{N}]/u.test(token))
+    .map((token) => `"${token.replace(/"/g, '""')}"`);
+  if (tokens.length === 0) return '';
+  return tokens
+    .map((quoted, index) =>
+      index === tokens.length - 1 ? `${quoted}*` : `${quoted} AND`,
+    )
+    .join(' ');
+}
+
 // V1: búsqueda FTS5 pura (bm25). Sin capa semántica/embeddings.
 export async function searchNotesWithScore(
   query: string,
@@ -237,13 +272,13 @@ export async function searchNotesWithScore(
   const trimmed = query.trim();
   if (!trimmed) return [];
   if (signal?.aborted) return [];
-  // ponytail: quoted FTS5 phrase search avoids syntax errors from user input.
-  const ftsQuery = `"${trimmed.replace(/"/g, '""')}"`;
+  const ftsQuery = buildFtsQuery(trimmed);
+  if (!ftsQuery) return [];
   const db = await getDb();
   const rows = await db.getAllAsync<NoteRowWithScore>(
     `SELECT n.id, n.title, n.body_md, n.status, n.pinned, n.parent_id,
             n.section, n.content_type, n.created_at, n.updated_at, n.deleted_at,
-            bm25(notes_fts) AS bm25_raw,
+            bm25(notes_fts, ${SEARCH_BM25_WEIGHTS}) AS bm25_raw,
             (
               SELECT GROUP_CONCAT(t.name, ' ')
               FROM note_tags nt JOIN tags t ON t.id = nt.tag_id
@@ -253,14 +288,50 @@ export async function searchNotesWithScore(
      JOIN notes n ON n.id = fts.rowid
      WHERE notes_fts MATCH ?
        AND n.deleted_at IS NULL
-     ORDER BY bm25_raw ASC`,
+     ORDER BY bm25_raw ASC
+     LIMIT ?`,
     ftsQuery,
+    SEARCH_RESULT_LIMIT,
   );
+  if (signal?.aborted) return [];
   // ponytail: FTS5 bm25 stays ASC because lower (more negative) means more relevant.
-  return attachTags(rows).map((note, index) => ({
+  const notes = attachTags(rows);
+  const collectionNamesById = await listCollectionNamesByNoteIds(
+    db,
+    notes.map((note) => note.id),
+  );
+  for (const note of notes) {
+    note.collectionNames = collectionNamesById.get(note.id) ?? [];
+  }
+  return notes.map((note, index) => ({
     note,
     bm25: rows[index].bm25_raw,
   }));
+}
+
+// Una sola consulta para todo el lote de resultados. Sin esto, enseñar el
+// contexto de colección en la búsqueda costaría un SELECT por fila (N+1).
+async function listCollectionNamesByNoteIds(
+  db: Awaited<ReturnType<typeof getDb>>,
+  noteIds: number[],
+): Promise<Map<number, string[]>> {
+  const byId = new Map<number, string[]>();
+  if (noteIds.length === 0) return byId;
+  const placeholders = noteIds.map(() => '?').join(', ');
+  const rows = await db.getAllAsync<{ note_id: number; name: string }>(
+    `SELECT nc.note_id AS note_id, c.name AS name
+     FROM note_collections nc
+     JOIN collections c ON c.id = nc.collection_id
+     WHERE nc.note_id IN (${placeholders})
+     ORDER BY c.name COLLATE NOCASE ASC`,
+    ...noteIds,
+  );
+  for (const row of rows) {
+    const names = byId.get(row.note_id);
+    if (names) names.push(row.name);
+    else byId.set(row.note_id, [row.name]);
+  }
+  return byId;
 }
 
 function tagFilterCte(): string {
@@ -277,7 +348,7 @@ function tagFilterCte(): string {
 
 function noteWithTagsSelect(): string {
   return `
-    n.id, n.title, n.body_md, n.status, n.pinned, n.parent_id,
+    n.id, n.title, ${LIST_BODY_PREVIEW_SQL}, n.status, n.pinned, n.parent_id,
     n.section, n.content_type, n.created_at, n.updated_at, n.deleted_at,
     (
       SELECT GROUP_CONCAT(t.name, ' ')
