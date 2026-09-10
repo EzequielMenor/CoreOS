@@ -48,9 +48,25 @@ function createGraphHtml(
   const context = canvas.getContext('2d');
   const positions = new Map();
   const velocities = new Map();
+  const labelDirections = new Map();
+  const pointers = new Map();
+  const nodeRadius = 24;
+  const labelMaxWidth = 148;
+  const minZoom = 0.65;
+  const maxZoom = 2.5;
   let width = 0;
   let height = 0;
+  let zoom = 1;
+  let panX = 0;
+  let panY = 0;
+  let gesture = null;
+  let suppressClickUntil = 0;
+  let initialized = false;
   let animationFrame;
+
+  function clamp(value, minimum, maximum) {
+    return Math.max(minimum, Math.min(maximum, value));
+  }
 
   function resize() {
     const ratio = window.devicePixelRatio || 1;
@@ -61,18 +77,127 @@ function createGraphHtml(
     canvas.style.width = width + 'px';
     canvas.style.height = height + 'px';
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    if (initialized) fitGraph();
   }
 
   function initialize() {
-    const radius = Math.max(80, Math.min(width, height) * 0.32);
-    data.nodes.forEach((node, index) => {
-      const angle = (index / Math.max(1, data.nodes.length)) * Math.PI * 2;
-      positions.set(node.id, {
-        x: width / 2 + Math.cos(angle) * radius,
-        y: height / 2 + Math.sin(angle) * radius,
+    const count = data.nodes.length;
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const compactSpacing = Math.min(105, Math.max(82, width * 0.18));
+
+    if (count === 1) {
+      positions.set(data.nodes[0].id, { x: centerX, y: centerY });
+      labelDirections.set(data.nodes[0].id, 1);
+    } else if (count === 2) {
+      positions.set(data.nodes[0].id, { x: centerX - compactSpacing, y: centerY });
+      positions.set(data.nodes[1].id, { x: centerX + compactSpacing, y: centerY });
+      labelDirections.set(data.nodes[0].id, -1);
+      labelDirections.set(data.nodes[1].id, 1);
+    } else if (count === 3) {
+      positions.set(data.nodes[0].id, { x: centerX, y: centerY - 72 });
+      positions.set(data.nodes[1].id, { x: centerX - compactSpacing, y: centerY + 54 });
+      positions.set(data.nodes[2].id, { x: centerX + compactSpacing, y: centerY + 54 });
+      labelDirections.set(data.nodes[0].id, -1);
+      labelDirections.set(data.nodes[1].id, 1);
+      labelDirections.set(data.nodes[2].id, 1);
+    } else {
+      const radius = Math.max(110, Math.min(220, Math.min(width, height) * 0.28));
+      data.nodes.forEach((node, index) => {
+        const angle = (index / Math.max(1, count)) * Math.PI * 2;
+        positions.set(node.id, {
+          x: centerX + Math.cos(angle) * radius,
+          y: centerY + Math.sin(angle) * radius,
+        });
       });
+    }
+
+    data.nodes.forEach((node) => {
       velocities.set(node.id, { x: 0, y: 0 });
     });
+    initialized = true;
+    fitGraph();
+  }
+
+  function splitLongWord(word) {
+    const chunks = [];
+    let current = '';
+    for (const character of word) {
+      const candidate = current + character;
+      if (current && context.measureText(candidate).width > labelMaxWidth) {
+        chunks.push(current);
+        current = character;
+      } else {
+        current = candidate;
+      }
+    }
+    if (current) chunks.push(current);
+    return chunks;
+  }
+
+  function getLabelLines(value) {
+    const label = value.trim() || 'Sin título';
+    const words = label.split(/\\s+/);
+    const lines = [];
+    let current = '';
+
+    words.forEach((word) => {
+      if (context.measureText(word).width > labelMaxWidth) {
+        if (current) lines.push(current);
+        const chunks = splitLongWord(word);
+        lines.push(...chunks.slice(0, -1));
+        current = chunks[chunks.length - 1] || '';
+        return;
+      }
+
+      const candidate = current ? current + ' ' + word : word;
+      if (current && context.measureText(candidate).width > labelMaxWidth) {
+        lines.push(current);
+        current = word;
+      } else {
+        current = candidate;
+      }
+    });
+    if (current) lines.push(current);
+
+    if (lines.length <= 2) return lines;
+    const secondLine = lines.slice(1).join(' ');
+    let truncated = secondLine;
+    while (context.measureText(truncated + '…').width > labelMaxWidth && truncated.length > 1) {
+      truncated = truncated.slice(0, -1);
+    }
+    return [lines[0], truncated.trimEnd() + '…'];
+  }
+
+  function getLabelDirection(node, point) {
+    return labelDirections.get(node.id) || (point.y <= height / 2 ? -1 : 1);
+  }
+
+  function fitGraph() {
+    if (!positions.size || width === 0 || height === 0) return;
+
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    data.nodes.forEach((node) => {
+      const point = positions.get(node.id);
+      minX = Math.min(minX, point.x - nodeRadius - labelMaxWidth / 2);
+      maxX = Math.max(maxX, point.x + nodeRadius + labelMaxWidth / 2);
+      minY = Math.min(minY, point.y - nodeRadius - 42);
+      maxY = Math.max(maxY, point.y + nodeRadius + 42);
+    });
+
+    const padding = 24;
+    const graphWidth = Math.max(1, maxX - minX);
+    const graphHeight = Math.max(1, maxY - minY);
+    const fitZoom = Math.min(
+      (width - padding * 2) / graphWidth,
+      (height - padding * 2) / graphHeight,
+    );
+    zoom = clamp(Math.min(1, fitZoom), minZoom, maxZoom);
+    panX = width / 2 - ((minX + maxX) / 2) * zoom;
+    panY = height / 2 - ((minY + maxY) / 2) * zoom;
   }
 
   function step() {
@@ -146,35 +271,171 @@ function createGraphHtml(
     const point = positions.get(node.id);
     const isFocus = node.id === focusId;
     context.beginPath();
-    context.arc(point.x, point.y, isFocus ? 25 : 21, 0, Math.PI * 2);
+    context.arc(point.x, point.y, isFocus ? 28 : nodeRadius, 0, Math.PI * 2);
     context.fillStyle = isFocus ? colors.accent : colors.background;
     context.fill();
     context.strokeStyle = colors.accent;
     context.lineWidth = isFocus ? 3 : 1.5;
     context.stroke();
-    context.fillStyle = isFocus ? colors.background : colors.text;
+  }
+
+  function drawLabel(node) {
+    const point = positions.get(node.id);
+    context.font = '600 12px -apple-system, BlinkMacSystemFont, sans-serif';
+    const lines = getLabelLines(node.title);
+    const lineHeight = 15;
+    const labelHeight = lines.length * lineHeight;
+    const labelWidth = Math.min(
+      labelMaxWidth,
+      Math.max(48, ...lines.map((line) => context.measureText(line).width)) + 12,
+    );
+    const direction = getLabelDirection(node, point);
+    const labelCenterY = point.y + direction * (nodeRadius + 12 + labelHeight / 2);
+    const left = point.x - labelWidth / 2;
+    const top = labelCenterY - labelHeight / 2 - 4;
+
+    context.fillStyle = colors.background;
+    context.fillRect(left, top, labelWidth, labelHeight + 8);
+    context.fillStyle = node.id === focusId ? colors.accent : colors.text;
     context.font = '600 12px -apple-system, BlinkMacSystemFont, sans-serif';
     context.textAlign = 'center';
     context.textBaseline = 'middle';
-    const label = node.title.trim() || 'Sin título';
-    context.fillText(label.length > 22 ? label.slice(0, 21) + '…' : label, point.x, point.y);
+    lines.forEach((line, index) => {
+      context.fillText(line, point.x, labelCenterY - (labelHeight - lineHeight) / 2 + index * lineHeight);
+    });
   }
 
   function render() {
     step();
     context.clearRect(0, 0, width, height);
+    context.save();
+    context.translate(panX, panY);
+    context.scale(zoom, zoom);
     data.edges.forEach(drawEdge);
     data.nodes.forEach(drawNode);
+    data.nodes.forEach(drawLabel);
+    context.restore();
     animationFrame = window.requestAnimationFrame(render);
   }
 
-  canvas.addEventListener('click', (event) => {
+  function getCanvasPoint(event) {
     const bounds = canvas.getBoundingClientRect();
-    const x = event.clientX - bounds.left;
-    const y = event.clientY - bounds.top;
+    return { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
+  }
+
+  function getPinchState() {
+    const [first, second] = Array.from(pointers.values());
+    const dx = second.x - first.x;
+    const dy = second.y - first.y;
+    const distance = Math.max(1, Math.hypot(dx, dy));
+    const midpoint = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+    return { distance, midpoint };
+  }
+
+  function beginGesture() {
+    if (pointers.size >= 2) {
+      const { distance, midpoint } = getPinchState();
+      gesture = {
+        type: 'pinch',
+        distance,
+        midpoint,
+        startZoom: zoom,
+        startPanX: panX,
+        startPanY: panY,
+        anchorX: (midpoint.x - panX) / zoom,
+        anchorY: (midpoint.y - panY) / zoom,
+        moved: false,
+      };
+      return;
+    }
+
+    const [point] = Array.from(pointers.values());
+    if (point) {
+      gesture = {
+        type: 'pan',
+        startX: point.x,
+        startY: point.y,
+        startPanX: panX,
+        startPanY: panY,
+        moved: false,
+      };
+    }
+  }
+
+  function updateGesture() {
+    if (!gesture) return;
+    if (pointers.size >= 2) {
+      if (gesture.type !== 'pinch') beginGesture();
+      const { distance, midpoint } = getPinchState();
+      const scale = distance / gesture.distance;
+      zoom = clamp(gesture.startZoom * scale, minZoom, maxZoom);
+      panX = midpoint.x - gesture.anchorX * zoom;
+      panY = midpoint.y - gesture.anchorY * zoom;
+      gesture.moved = gesture.moved || Math.abs(scale - 1) > 0.02;
+      return;
+    }
+
+    const [point] = Array.from(pointers.values());
+    if (!point) return;
+    if (gesture.type !== 'pan') beginGesture();
+    const deltaX = point.x - gesture.startX;
+    const deltaY = point.y - gesture.startY;
+    panX = gesture.startPanX + deltaX;
+    panY = gesture.startPanY + deltaY;
+    gesture.moved = gesture.moved || Math.hypot(deltaX, deltaY) > 6;
+  }
+
+  function handlePointerDown(event) {
+    event.preventDefault();
+    canvas.setPointerCapture?.(event.pointerId);
+    const point = getCanvasPoint(event);
+    pointers.set(event.pointerId, point);
+    beginGesture();
+  }
+
+  function handlePointerMove(event) {
+    if (!pointers.has(event.pointerId)) return;
+    event.preventDefault();
+    pointers.set(event.pointerId, getCanvasPoint(event));
+    updateGesture();
+  }
+
+  function handlePointerUp(event) {
+    if (!pointers.has(event.pointerId)) return;
+    pointers.delete(event.pointerId);
+    if (pointers.size) {
+      beginGesture();
+    } else {
+      if (gesture?.moved) suppressClickUntil = Date.now() + 250;
+      gesture = null;
+    }
+  }
+
+  function zoomAt(point, nextZoom) {
+    const worldX = (point.x - panX) / zoom;
+    const worldY = (point.y - panY) / zoom;
+    zoom = clamp(nextZoom, minZoom, maxZoom);
+    panX = point.x - worldX * zoom;
+    panY = point.y - worldY * zoom;
+  }
+
+  canvas.addEventListener('pointerdown', handlePointerDown, { passive: false });
+  canvas.addEventListener('pointermove', handlePointerMove, { passive: false });
+  canvas.addEventListener('pointerup', handlePointerUp);
+  canvas.addEventListener('pointercancel', handlePointerUp);
+  canvas.addEventListener('wheel', (event) => {
+    event.preventDefault();
+    const point = getCanvasPoint(event);
+    zoomAt(point, zoom * Math.exp(-event.deltaY * 0.001));
+  }, { passive: false });
+  canvas.addEventListener('click', (event) => {
+    if (Date.now() < suppressClickUntil) return;
+    const point = getCanvasPoint(event);
+    const worldX = (point.x - panX) / zoom;
+    const worldY = (point.y - panY) / zoom;
     for (const node of data.nodes) {
-      const point = positions.get(node.id);
-      if (Math.hypot(point.x - x, point.y - y) <= 28) {
+      const nodePoint = positions.get(node.id);
+      if (Math.hypot(nodePoint.x - worldX, nodePoint.y - worldY) <= nodeRadius + 8) {
         window.ReactNativeWebView.postMessage(String(node.id));
         return;
       }
@@ -236,6 +497,7 @@ export function NoteGraphView({
         const noteId = Number(event.nativeEvent.data);
         if (Number.isInteger(noteId) && noteId > 0) onNodePress(noteId);
       }}
+      scrollEnabled={false}
       source={{ html }}
       style={[styles.webView, { backgroundColor: theme.notes.bg.base }]}
     />

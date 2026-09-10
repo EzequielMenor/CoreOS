@@ -158,7 +158,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: NoteSpacing.xs,
     paddingHorizontal: NoteSpacing.md,
-    paddingVertical: NoteSpacing.sm,
+    paddingVertical: NoteSpacing.xs,
   },
   center: {
     alignItems: 'center',
