@@ -30,6 +30,7 @@ jobs:
       - name: Verify SQLite FTS5 support (test harness)
         run: |
           node -e "
+            console.log('node', process.version, 'abi', process.versions.modules);
             const D = require('better-sqlite3');
             const db = new D(':memory:');
             const fts5 = db.prepare('PRAGMA compile_options').all()
