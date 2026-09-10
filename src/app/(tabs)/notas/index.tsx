@@ -245,26 +245,48 @@ export default function NotesListScreen() {
 
   const headerRight = useCallback(
     () => (
-      <Pressable
-        accessibilityLabel="Ajustes"
-        accessibilityRole="button"
-        hitSlop={8}
-        onPress={() => {
-          void haptic.tap.light();
-          router.push('/ajustes');
-        }}
-        style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
-      >
-        {Platform.OS === 'ios' ? (
-          <SymbolView
-            name="gearshape"
-            size={IconSize.md}
-            tintColor={theme.notes.text.primary}
-          />
-        ) : (
-          <Text style={{ color: theme.notes.text.primary, fontSize: 16 }}>⚙️</Text>
-        )}
-      </Pressable>
+      <View style={styles.headerActions}>
+        <Pressable
+          accessibilityLabel="Grafo de notas"
+          accessibilityRole="button"
+          hitSlop={8}
+          onPress={() => {
+            void haptic.tap.light();
+            router.push('/grafo' as never);
+          }}
+          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+        >
+          {Platform.OS === 'ios' ? (
+            <SymbolView
+              name="point.3.connected.trianglepath.dotted"
+              size={IconSize.md}
+              tintColor={theme.notes.text.primary}
+            />
+          ) : (
+            <Text style={{ color: theme.notes.text.primary, fontSize: 16 }}>⌘</Text>
+          )}
+        </Pressable>
+        <Pressable
+          accessibilityLabel="Ajustes"
+          accessibilityRole="button"
+          hitSlop={8}
+          onPress={() => {
+            void haptic.tap.light();
+            router.push('/ajustes');
+          }}
+          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+        >
+          {Platform.OS === 'ios' ? (
+            <SymbolView
+              name="gearshape"
+              size={IconSize.md}
+              tintColor={theme.notes.text.primary}
+            />
+          ) : (
+            <Text style={{ color: theme.notes.text.primary, fontSize: 16 }}>⚙️</Text>
+          )}
+        </Pressable>
+      </View>
     ),
     [router, theme],
   );
@@ -468,6 +490,11 @@ export default function NotesListScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  headerActions: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: NoteSpacing.sm,
   },
   searchWrap: {
     paddingHorizontal: NoteSpacing.md,

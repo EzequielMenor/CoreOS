@@ -116,6 +116,12 @@ export default function NoteDetailScreen() {
     router.push(`/notas/${note.id}/edit`);
   }, [note, router]);
 
+  const openGraph = useCallback(() => {
+    if (note == null) return;
+    void haptic.tap.light();
+    router.push({ pathname: '/grafo' as never, params: { noteId: String(note.id) } });
+  }, [note, router]);
+
   const handleRestore = useCallback(() => {
     if (note == null) return;
     void restoreNote(note.id).catch((error: unknown) => {
@@ -397,6 +403,27 @@ export default function NoteDetailScreen() {
               onCollectionsUpdated={setNoteCollections}
               onNoteUpdated={setNote}
             />
+            <Pressable
+              accessibilityLabel="Abrir grafo de esta nota"
+              accessibilityRole="button"
+              onPress={openGraph}
+              style={({ pressed }) => [
+                styles.graphButton,
+                {
+                  borderColor: theme.notes.border.subtle,
+                  opacity: pressed ? 0.7 : 1,
+                },
+              ]}
+            >
+              {Platform.OS === 'ios' ? (
+                <SymbolView
+                  name="point.3.connected.trianglepath.dotted"
+                  size={IconSize.sm}
+                  tintColor={theme.notes.text.accent}
+                />
+              ) : null}
+              <Text style={[styles.graphButtonText, { color: theme.notes.text.accent }]}>Ver grafo de conexiones</Text>
+            </Pressable>
             <RelatedNotesSection noteId={note.id} />
           </ScrollView>
         <Modal
@@ -688,6 +715,21 @@ const styles = StyleSheet.create({
     fontSize: Typography.body.size,
     fontStyle: 'italic',
     lineHeight: Typography.body.lineHeight,
+  },
+  graphButton: {
+    alignItems: 'center',
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: NoteSpacing.sm,
+    justifyContent: 'center',
+    marginTop: NoteSpacing.lg,
+    paddingHorizontal: NoteSpacing.md,
+    paddingVertical: NoteSpacing.sm,
+  },
+  graphButtonText: {
+    fontSize: Typography.caption.size,
+    fontWeight: '600',
   },
   headerAction: {
     fontSize: Typography.body.size,
