@@ -1,9 +1,16 @@
-import { useMemo, useState } from 'react';
-import { Platform, StyleSheet, Text, View } from 'react-native';
+import { useMemo, useRef, useState } from 'react';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import WebView from 'react-native-webview';
 
 import type { GraphEdge, GraphNode } from '@/db/queries/graph';
 import { useTheme } from '@/hooks/use-theme';
+
+// Ancho de la franja nativa del borde izquierdo de iOS (px). El strip no implementa el
+// swipe-to-back: solo saca al WKWebView del hit-testing ahi, para que el
+// UIScreenEdgePanGestureRecognizer del stack nativo reciba el touch (screens ya le da
+// precedencia sobre scroll pans, pero los recognizers internos de WebKit se la roban).
+const EDGE_SWIPE_ZONE = 30;
+export const RECENTER_SCRIPT = 'window.__coreosNoteGraphRecenter?.(); true;';
 
 export interface NoteGraphViewProps {
   nodes: GraphNode[];
@@ -19,7 +26,7 @@ function serializeGraph(value: { nodes: GraphNode[]; edges: GraphEdge[] }): stri
     .replace(/&/g, '\\u0026');
 }
 
-function createGraphHtml(
+export function createGraphHtml(
   data: { nodes: GraphNode[]; edges: GraphEdge[] },
   colors: { background: string; text: string; accent: string; muted: string },
   focusNodeId?: number,
@@ -52,7 +59,7 @@ function createGraphHtml(
   const pointers = new Map();
   const nodeRadius = 24;
   const labelMaxWidth = 148;
-  const minZoom = 0.65;
+  const minZoom = 0.1;
   const maxZoom = 2.5;
   let width = 0;
   let height = 0;
@@ -62,22 +69,52 @@ function createGraphHtml(
   let gesture = null;
   let suppressClickUntil = 0;
   let initialized = false;
+  let simulationRunning = false;
+  let renderStarted = false;
   let animationFrame;
+  let frameCount = 0;
 
   function clamp(value, minimum, maximum) {
     return Math.max(minimum, Math.min(maximum, value));
   }
 
+  function getViewportSize() {
+    const canvasBounds = canvas.getBoundingClientRect();
+    const candidates = [
+      { width: canvasBounds.width, height: canvasBounds.height, source: 'canvas' },
+      { width: document.documentElement.clientWidth, height: document.documentElement.clientHeight, source: 'document' },
+      { width: window.innerWidth, height: window.innerHeight, source: 'window' },
+    ];
+    return candidates.find((candidate) => (
+      Number.isFinite(candidate.width)
+      && Number.isFinite(candidate.height)
+      && candidate.width > 0
+      && candidate.height > 0
+    )) || null;
+  }
+
   function resize() {
-    const ratio = window.devicePixelRatio || 1;
-    width = window.innerWidth;
-    height = window.innerHeight;
-    canvas.width = width * ratio;
-    canvas.height = height * ratio;
-    canvas.style.width = width + 'px';
-    canvas.style.height = height + 'px';
+    const viewport = getViewportSize();
+    if (!viewport) return false;
+
+    const ratio = Number.isFinite(window.devicePixelRatio) && window.devicePixelRatio > 0
+      ? window.devicePixelRatio
+      : 1;
+    width = viewport.width;
+    height = viewport.height;
+    canvas.width = Math.round(width * ratio);
+    canvas.height = Math.round(height * ratio);
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
-    if (initialized) fitGraph();
+    if (initialized) {
+      if (!simulationRunning) fitGraph();
+    } else initialize();
+    if (!renderStarted) {
+      renderStarted = true;
+      render();
+    }
+    return true;
   }
 
   function initialize() {
@@ -116,7 +153,8 @@ function createGraphHtml(
       velocities.set(node.id, { x: 0, y: 0 });
     });
     initialized = true;
-    fitGraph();
+    simulationRunning = count > 3;
+    if (!simulationRunning) fitGraph();
   }
 
   function splitLongWord(word) {
@@ -173,34 +211,65 @@ function createGraphHtml(
     return labelDirections.get(node.id) || (point.y <= height / 2 ? -1 : 1);
   }
 
-  function fitGraph() {
-    if (!positions.size || width === 0 || height === 0) return;
+  function getLabelMetrics(node, point) {
+    context.font = '600 12px -apple-system, BlinkMacSystemFont, sans-serif';
+    const lines = getLabelLines(node.title);
+    const lineHeight = 15;
+    const labelHeight = lines.length * lineHeight;
+    const labelWidth = Math.min(
+      labelMaxWidth,
+      Math.max(48, ...lines.map((line) => context.measureText(line).width)) + 12,
+    );
+    const direction = getLabelDirection(node, point);
+    const labelCenterY = point.y + direction * (nodeRadius + 12 + labelHeight / 2);
+    const left = point.x - labelWidth / 2;
+    const top = labelCenterY - labelHeight / 2 - 4;
+    return {
+      left,
+      top,
+      right: left + labelWidth,
+      bottom: top + labelHeight + 8,
+      lines,
+      labelHeight,
+      labelWidth,
+      labelCenterY,
+    };
+  }
 
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
+  function getGraphBounds() {
+    const bounds = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
     data.nodes.forEach((node) => {
       const point = positions.get(node.id);
-      minX = Math.min(minX, point.x - nodeRadius - labelMaxWidth / 2);
-      maxX = Math.max(maxX, point.x + nodeRadius + labelMaxWidth / 2);
-      minY = Math.min(minY, point.y - nodeRadius - 42);
-      maxY = Math.max(maxY, point.y + nodeRadius + 42);
+      const radius = node.id === focusId ? 28 : nodeRadius;
+      const label = getLabelMetrics(node, point);
+      bounds.minX = Math.min(bounds.minX, point.x - radius, label.left);
+      bounds.maxX = Math.max(bounds.maxX, point.x + radius, label.right);
+      bounds.minY = Math.min(bounds.minY, point.y - radius, label.top);
+      bounds.maxY = Math.max(bounds.maxY, point.y + radius, label.bottom);
     });
+    return bounds;
+  }
 
+  function fitGraph() {
+    if (!positions.size || width <= 0 || height <= 0) return;
+
+    const bounds = getGraphBounds();
     const padding = 24;
-    const graphWidth = Math.max(1, maxX - minX);
-    const graphHeight = Math.max(1, maxY - minY);
+    const graphWidth = Math.max(1, bounds.maxX - bounds.minX);
+    const graphHeight = Math.max(1, bounds.maxY - bounds.minY);
     const fitZoom = Math.min(
-      (width - padding * 2) / graphWidth,
-      (height - padding * 2) / graphHeight,
+      Math.max(1, width - padding * 2) / graphWidth,
+      Math.max(1, height - padding * 2) / graphHeight,
     );
-    zoom = clamp(Math.min(1, fitZoom), minZoom, maxZoom);
-    panX = width / 2 - ((minX + maxX) / 2) * zoom;
-    panY = height / 2 - ((minY + maxY) / 2) * zoom;
+    zoom = Math.min(fitZoom, maxZoom);
+    panX = width / 2 - ((bounds.minX + bounds.maxX) / 2) * zoom;
+    panY = height / 2 - ((bounds.minY + bounds.maxY) / 2) * zoom;
   }
 
   function step() {
+    if (!simulationRunning) return;
+    const centerX = width / 2;
+    const centerY = height / 2;
     const forces = new Map(data.nodes.map((node) => [node.id, { x: 0, y: 0 }]));
     const repulsion = Math.min(5000, Math.max(1800, data.nodes.length * 140));
 
@@ -242,8 +311,8 @@ function createGraphHtml(
       const point = positions.get(node.id);
       const velocity = velocities.get(node.id);
       const force = forces.get(node.id);
-      force.x += (width / 2 - point.x) * 0.00025;
-      force.y += (height / 2 - point.y) * 0.00025;
+      force.x += (centerX - point.x) * 0.00025;
+      force.y += (centerY - point.y) * 0.00025;
       velocity.x = (velocity.x + force.x) * 0.985;
       velocity.y = (velocity.y + force.y) * 0.985;
       point.x = Math.max(30, Math.min(width - 30, point.x + velocity.x));
@@ -281,18 +350,8 @@ function createGraphHtml(
 
   function drawLabel(node) {
     const point = positions.get(node.id);
-    context.font = '600 12px -apple-system, BlinkMacSystemFont, sans-serif';
-    const lines = getLabelLines(node.title);
+    const { lines, labelHeight, labelWidth, labelCenterY, left, top } = getLabelMetrics(node, point);
     const lineHeight = 15;
-    const labelHeight = lines.length * lineHeight;
-    const labelWidth = Math.min(
-      labelMaxWidth,
-      Math.max(48, ...lines.map((line) => context.measureText(line).width)) + 12,
-    );
-    const direction = getLabelDirection(node, point);
-    const labelCenterY = point.y + direction * (nodeRadius + 12 + labelHeight / 2);
-    const left = point.x - labelWidth / 2;
-    const top = labelCenterY - labelHeight / 2 - 4;
 
     context.fillStyle = colors.background;
     context.fillRect(left, top, labelWidth, labelHeight + 8);
@@ -306,7 +365,18 @@ function createGraphHtml(
   }
 
   function render() {
-    step();
+    if (simulationRunning) {
+      step();
+      frameCount += 1;
+      const lowVelocity = frameCount >= 30 && data.nodes.every((node) => {
+        const velocity = velocities.get(node.id);
+        return Math.hypot(velocity.x, velocity.y) < 0.05;
+      });
+      if (lowVelocity || frameCount >= 180) {
+        simulationRunning = false;
+        fitGraph();
+      }
+    }
     context.clearRect(0, 0, width, height);
     context.save();
     context.translate(panX, panY);
@@ -419,6 +489,12 @@ function createGraphHtml(
     panY = point.y - worldY * zoom;
   }
 
+  function recenter() {
+    fitGraph();
+  }
+
+  window.__coreosNoteGraphRecenter = recenter;
+
   canvas.addEventListener('pointerdown', handlePointerDown, { passive: false });
   canvas.addEventListener('pointermove', handlePointerMove, { passive: false });
   canvas.addEventListener('pointerup', handlePointerUp);
@@ -441,11 +517,15 @@ function createGraphHtml(
       }
     }
   });
+  canvas.addEventListener('dblclick', recenter);
 
   window.addEventListener('resize', resize);
+  if (typeof ResizeObserver !== 'undefined') {
+    const resizeObserver = new ResizeObserver(resize);
+    resizeObserver.observe(canvas);
+    resizeObserver.observe(document.documentElement);
+  }
   resize();
-  initialize();
-  render();
 })();
 </script>
 </body>
@@ -459,6 +539,7 @@ export function NoteGraphView({
   onNodePress,
 }: NoteGraphViewProps) {
   const theme = useTheme();
+  const webViewRef = useRef<{ injectJavaScript: (script: string) => void } | null>(null);
   const [webViewError, setWebViewError] = useState(false);
   const html = useMemo(
     () =>
@@ -475,6 +556,10 @@ export function NoteGraphView({
     [edges, focusNodeId, nodes, theme],
   );
 
+  const recenterGraph = () => {
+    webViewRef.current?.injectJavaScript(RECENTER_SCRIPT);
+  };
+
   if (Platform.OS === 'web' || webViewError) {
     return (
       <View style={[styles.fallback, { backgroundColor: theme.notes.bg.surface }]}> 
@@ -489,24 +574,82 @@ export function NoteGraphView({
   }
 
   return (
-    <WebView
-      originWhitelist={['*']}
-      javaScriptEnabled
-      onError={() => setWebViewError(true)}
-      onMessage={(event) => {
-        const noteId = Number(event.nativeEvent.data);
-        if (Number.isInteger(noteId) && noteId > 0) onNodePress(noteId);
-      }}
-      scrollEnabled={false}
-      source={{ html }}
-      style={[styles.webView, { backgroundColor: theme.notes.bg.base }]}
-    />
+    <View style={styles.graphContainer}>
+      <Pressable
+        accessibilityLabel="Recentrar"
+        accessibilityRole="button"
+        onPress={recenterGraph}
+        style={[
+          styles.recenterButton,
+          {
+            backgroundColor: theme.notes.bg.surface,
+            borderColor: theme.notes.border.subtle,
+          },
+        ]}
+      >
+        <Text style={[styles.recenterButtonText, { color: theme.notes.text.primary }]}>Recentrar</Text>
+      </Pressable>
+      <View style={styles.webViewContainer}>
+        <WebView
+          ref={(instance) => {
+            webViewRef.current = instance;
+          }}
+          originWhitelist={['*']}
+          javaScriptEnabled
+          onError={() => setWebViewError(true)}
+          onMessage={(event) => {
+            const noteId = Number(event.nativeEvent.data);
+            if (Number.isInteger(noteId) && noteId > 0) onNodePress(noteId);
+          }}
+          scrollEnabled={false}
+          source={{ html }}
+          style={[styles.webView, { backgroundColor: theme.notes.bg.base }]}
+        />
+        {Platform.OS === 'ios' ? (
+          <>
+            {/* Franja nativa del borde izquierdo: el touch que arranca ahi pega en este
+                View y no en el WKWebView, asi el gesto de back del stack nativo lo reconoce. */}
+            <View style={styles.edgeSwipeZone} />
+          </>
+        ) : null}
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  graphContainer: {
+    flex: 1,
+    position: 'relative',
+  },
+  recenterButton: {
+    borderRadius: 10,
+    borderWidth: 1,
+    elevation: 2,
+    minHeight: 36,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    position: 'absolute',
+    right: 16,
+    top: 8,
+    zIndex: 2,
+  },
+  recenterButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  webViewContainer: {
+    flex: 1,
+  },
   webView: {
     flex: 1,
+  },
+  edgeSwipeZone: {
+    bottom: 0,
+    left: 0,
+    position: 'absolute',
+    top: 0,
+    width: EDGE_SWIPE_ZONE,
   },
   fallback: {
     alignItems: 'center',

@@ -79,12 +79,17 @@ export default function GraphScreen() {
   );
 
   return (
-    <SafeAreaView edges={['bottom']} style={[styles.container, { backgroundColor: theme.notes.bg.base }]}>
+    <SafeAreaView
+      edges={['bottom']}
+      style={[styles.container, { backgroundColor: theme.notes.bg.base }]}
+    >
       <Stack.Screen
         options={{
           headerShown: true,
           title: headerTitle,
           headerBackTitle: 'Notas',
+          // ponytail: iOS edge swipe nativo del stack; el canvas libera la franja del borde (NoteGraphView).
+          gestureEnabled: true,
           headerStyle: { backgroundColor: theme.notes.bg.base },
           headerTintColor: theme.notes.accent.primary,
           headerTitleStyle: { color: theme.notes.text.primary, fontWeight: '600' },
@@ -109,6 +114,7 @@ export default function GraphScreen() {
         <>
           <ScrollView
             contentContainerStyle={styles.filters}
+            style={styles.filtersScroll}
             horizontal
             showsHorizontalScrollIndicator={false}
           >
@@ -154,8 +160,13 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  filtersScroll: {
+    flexGrow: 0,
+    flexShrink: 0,
+  },
   filters: {
     alignItems: 'center',
+    flexGrow: 0,
     gap: NoteSpacing.xs,
     paddingHorizontal: NoteSpacing.md,
     paddingVertical: NoteSpacing.xs,
